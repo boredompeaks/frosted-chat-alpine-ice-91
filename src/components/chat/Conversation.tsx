@@ -1,157 +1,238 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { GlassContainer, GlassTextarea, GlassButton, GlassBadge, TypingIndicator, DisappearingMessage } from "@/components/ui/glassmorphism";
+import { GlassContainer, GlassTextarea, GlassButton, GlassCard, GlassBadge, TypingIndicator, DisappearingMessage } from "@/components/ui/glassmorphism";
 import { ArrowLeft, Send, Image, Clock, Check, CheckCheck, Eye, Smile, Trash } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
+import { v4 as uuidv4 } from "uuid";
 
 interface Message {
   id: string;
-  content: string;
-  sender: "me" | "them";
-  timestamp: Date;
-  status: "sent" | "delivered" | "read";
-  isDisappearing?: boolean;
-  disappearAfter?: number; // in seconds
-  reactions?: { emoji: string; by: "me" | "them" }[];
-  media?: {
-    type: "image";
-    url: string;
-    oneTimeView?: boolean;
-    viewed?: boolean;
-  };
+  content: string | null;
+  sender_id: string | null;
+  chat_id: string | null;
+  created_at: string | null;
+  read_at: string | null;
+  disappear_after: number | null;
+  is_one_time_view: boolean | null;
+  media_url: string | null;
 }
 
-const MOCK_CONTACTS = {
-  "1": { username: "Alice", status: "Just saw a beautiful sunset!" },
-  "2": { username: "Bob", status: "" },
-  "3": { username: "Charlie", status: "Busy with work" },
-};
+interface Reaction {
+  id: string;
+  message_id: string | null;
+  user_id: string | null;
+  emoji: string;
+  created_at: string | null;
+}
 
-const MOCK_MESSAGES: Record<string, Message[]> = {
-  "1": [
-    {
-      id: "m1",
-      content: "Hey there! How are you doing?",
-      sender: "them",
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 2), // 2 hours ago
-      status: "read",
-    },
-    {
-      id: "m2",
-      content: "I'm good, thanks! How about you?",
-      sender: "me",
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 1.5), // 1.5 hours ago
-      status: "read",
-    },
-    {
-      id: "m3",
-      content: "This is a disappearing message that will self-destruct!",
-      sender: "them",
-      timestamp: new Date(Date.now() - 1000 * 60 * 30), // 30 minutes ago
-      status: "read",
-      isDisappearing: true,
-      disappearAfter: 30, // 30 seconds
-    },
-    {
-      id: "m4",
-      content: "Check out this photo I took yesterday",
-      sender: "them",
-      timestamp: new Date(Date.now() - 1000 * 60 * 15), // 15 minutes ago
-      status: "read",
-      media: {
-        type: "image",
-        url: "https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?auto=format&fit=crop&q=80&w=800",
-        oneTimeView: false,
-      },
-      reactions: [
-        { emoji: "❤️", by: "me" }
-      ]
-    },
-    {
-      id: "m5",
-      content: "And here's a one-time view image",
-      sender: "them",
-      timestamp: new Date(Date.now() - 1000 * 60 * 10), // 10 minutes ago
-      status: "read",
-      media: {
-        type: "image",
-        url: "https://images.unsplash.com/photo-1470813740244-df37b8c1edcb?auto=format&fit=crop&q=80&w=800",
-        oneTimeView: true,
-      }
-    },
-    {
-      id: "m6",
-      content: "These photos are beautiful!",
-      sender: "me",
-      timestamp: new Date(Date.now() - 1000 * 60 * 5), // 5 minutes ago
-      status: "delivered",
-    },
-  ],
-  "2": [
-    {
-      id: "m1",
-      content: "Can we meet tomorrow?",
-      sender: "them",
-      timestamp: new Date(Date.now() - 1000 * 60 * 60), // 1 hour ago
-      status: "read",
-    },
-    {
-      id: "m2",
-      content: "Sure, what time works for you?",
-      sender: "me",
-      timestamp: new Date(Date.now() - 1000 * 60 * 55), // 55 minutes ago
-      status: "delivered",
-    },
-  ],
-  "3": [
-    {
-      id: "m1",
-      content: "I'll send you the documents later",
-      sender: "them",
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 3), // 3 hours ago
-      status: "read",
-    },
-  ],
-};
+interface Contact {
+  id: string;
+  username: string;
+  status: string | null;
+}
 
 const EMOJIS = ["👍", "❤️", "😊", "😂", "😮", "😢", "🎉"];
 
 const Conversation = () => {
-  const { id } = useParams<{ id: string }>();
+  const { id: chatId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
   
   const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [contact, setContact] = useState<{ username: string; status: string } | null>(null);
+  const [messages, setMessages] = useState<(Message & { reactions?: Reaction[] })[]>([]);
+  const [contact, setContact] = useState<Contact | null>(null);
   const [isTyping, setIsTyping] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [reactingToMessageId, setReactingToMessageId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
+  
   useEffect(() => {
-    if (id && MOCK_CONTACTS[id as keyof typeof MOCK_CONTACTS]) {
-      setContact(MOCK_CONTACTS[id as keyof typeof MOCK_CONTACTS]);
-    }
+    if (!chatId || !user) return;
     
-    if (id && MOCK_MESSAGES[id]) {
-      setMessages(MOCK_MESSAGES[id]);
-    }
-    
-    // Simulate typing indicator randomly
-    const typingInterval = setInterval(() => {
-      const shouldType = Math.random() > 0.7;
-      if (shouldType) {
-        setIsTyping(true);
-        setTimeout(() => setIsTyping(false), 3000);
+    // Fetch messages and reactions
+    const fetchMessages = async () => {
+      try {
+        setLoading(true);
+        
+        const { data: messagesData, error: messagesError } = await supabase
+          .from("messages")
+          .select("*")
+          .eq("chat_id", chatId)
+          .order("created_at", { ascending: true });
+          
+        if (messagesError) {
+          console.error("Error fetching messages:", messagesError);
+          return;
+        }
+        
+        // Fetch reactions for all messages
+        const { data: reactionsData, error: reactionsError } = await supabase
+          .from("reactions")
+          .select("*")
+          .in("message_id", messagesData?.map(m => m.id) || []);
+          
+        if (reactionsError) {
+          console.error("Error fetching reactions:", reactionsError);
+        }
+        
+        // Combine messages with their reactions
+        const messagesWithReactions = messagesData.map(msg => {
+          const messageReactions = reactionsData?.filter(r => r.message_id === msg.id) || [];
+          return {
+            ...msg,
+            reactions: messageReactions.length > 0 ? messageReactions : undefined
+          };
+        });
+        
+        setMessages(messagesWithReactions || []);
+        
+        // Mark messages from other users as read
+        const unreadMessages = messagesData?.filter(m => 
+          m.sender_id !== user.id && m.read_at === null
+        );
+        
+        if (unreadMessages && unreadMessages.length > 0) {
+          for (const msg of unreadMessages) {
+            await supabase
+              .from("messages")
+              .update({ read_at: new Date().toISOString() })
+              .eq("id", msg.id);
+          }
+        }
+      } catch (error) {
+        console.error("Error in fetchMessages:", error);
+      } finally {
+        setLoading(false);
       }
-    }, 10000);
+    };
     
-    return () => clearInterval(typingInterval);
-  }, [id]);
+    // Get the other user in this chat
+    const fetchContact = async () => {
+      try {
+        const { data: participants, error: participantsError } = await supabase
+          .from("chat_participants")
+          .select("user_id")
+          .eq("chat_id", chatId)
+          .neq("user_id", user.id);
+          
+        if (participantsError || !participants || participants.length === 0) {
+          console.error("Error fetching participants:", participantsError);
+          return;
+        }
+        
+        const otherUserId = participants[0].user_id;
+        
+        const { data: profileData, error: profileError } = await supabase
+          .from("profiles")
+          .select("id, username, status")
+          .eq("id", otherUserId)
+          .single();
+          
+        if (profileError) {
+          console.error("Error fetching contact profile:", profileError);
+          return;
+        }
+        
+        setContact(profileData);
+      } catch (error) {
+        console.error("Error fetching contact:", error);
+      }
+    };
+    
+    fetchMessages();
+    fetchContact();
+    
+    // Set up real-time subscription for new messages
+    const messageChannel = supabase
+      .channel(`chat:${chatId}:messages`)
+      .on('postgres_changes', 
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `chat_id=eq.${chatId}`
+        }, 
+        (payload) => {
+          const newMessage = payload.new as Message;
+          
+          // Mark as read if from other user
+          if (newMessage.sender_id !== user.id && newMessage.read_at === null) {
+            supabase
+              .from("messages")
+              .update({ read_at: new Date().toISOString() })
+              .eq("id", newMessage.id);
+          }
+          
+          setMessages(prev => [...prev, { ...newMessage, reactions: [] }]);
+        }
+      )
+      .subscribe();
+      
+    // Set up real-time subscription for reactions
+    const reactionChannel = supabase
+      .channel(`chat:${chatId}:reactions`)
+      .on('postgres_changes', 
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'reactions'
+        }, 
+        (payload) => {
+          const newReaction = payload.new as Reaction;
+          
+          setMessages(prev => prev.map(msg => {
+            if (msg.id === newReaction.message_id) {
+              return {
+                ...msg,
+                reactions: [...(msg.reactions || []), newReaction]
+              };
+            }
+            return msg;
+          }));
+        }
+      )
+      .subscribe();
+      
+    // Presence channel for typing indicators
+    const presenceChannel = supabase.channel(`presence:${chatId}`);
+
+    presenceChannel
+      .on('presence', { event: 'sync' }, () => {
+        const presenceState = presenceChannel.presenceState();
+        
+        // Check if the other user is typing
+        const otherUserPresence = Object.values(presenceState)
+          .flat()
+          .find((p: any) => p.user_id !== user.id && p.is_typing);
+          
+        setIsTyping(!!otherUserPresence);
+      })
+      .subscribe();
+      
+    return () => {
+      supabase.removeChannel(messageChannel);
+      supabase.removeChannel(reactionChannel);
+      supabase.removeChannel(presenceChannel);
+    };
+  }, [chatId, user]);
+
+  const updateTypingStatus = async (isTyping: boolean) => {
+    if (!chatId || !user) return;
+    
+    const channel = supabase.channel(`presence:${chatId}`);
+    
+    await channel.track({
+      user_id: user.id,
+      is_typing: isTyping
+    });
+  };
 
   useEffect(() => {
     scrollToBottom();
@@ -161,72 +242,83 @@ const Conversation = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (!message.trim() && !fileInputRef.current?.files?.length) return;
+    if (!user || !chatId) return;
     
-    const newMessage: Message = {
-      id: `new-${Date.now()}`,
-      content: message,
-      sender: "me",
-      timestamp: new Date(),
-      status: "sent",
-    };
+    // Clear typing status
+    updateTypingStatus(false);
     
-    setMessages(prev => [...prev, newMessage]);
-    setMessage("");
-    
-    // Simulate message being delivered
-    setTimeout(() => {
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === newMessage.id 
-            ? { ...msg, status: "delivered" } 
-            : msg
-        )
-      );
-    }, 1000);
-    
-    // Simulate message being read
-    setTimeout(() => {
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === newMessage.id 
-            ? { ...msg, status: "read" } 
-            : msg
-        )
-      );
-    }, 3000);
-    
-    // Simulate reply if appropriate
-    if (Math.random() > 0.3) {
-      // Show typing indicator
-      setTimeout(() => setIsTyping(true), 2000);
+    try {
+      let mediaUrl = null;
       
-      // Send reply
-      setTimeout(() => {
-        setIsTyping(false);
+      // If there's a file, upload it to storage
+      if (fileInputRef.current?.files?.length) {
+        const file = fileInputRef.current.files[0];
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${uuidv4()}.${fileExt}`;
+        const filePath = `${user.id}/${fileName}`;
         
-        const replies = [
-          "That's interesting!",
-          "I see what you mean.",
-          "Tell me more about that.",
-          "I was just thinking about that!",
-          "Good point!",
-          "I'm not sure I agree, but I see your perspective."
-        ];
+        // Upload image to storage
+        const { error: uploadError } = await supabase.storage
+          .from('chat-media')
+          .upload(filePath, file);
+          
+        if (uploadError) {
+          toast({
+            title: "Upload failed",
+            description: uploadError.message,
+            variant: "destructive",
+          });
+          return;
+        }
         
-        const randomReply = replies[Math.floor(Math.random() * replies.length)];
+        // Get public URL
+        const { data: urlData } = await supabase.storage
+          .from('chat-media')
+          .getPublicUrl(filePath);
+          
+        if (urlData) {
+          mediaUrl = urlData.publicUrl;
+        }
+      }
+      
+      // Create message in database
+      const { data: newMessage, error: messageError } = await supabase
+        .from("messages")
+        .insert({
+          chat_id: chatId,
+          content: message.trim() || null,
+          sender_id: user.id,
+          media_url: mediaUrl,
+          // Add disappearing properties if needed
+          // disappear_after: disappearTime ? disappearTime : null,
+          // is_one_time_view: isOneTimeView,
+        })
+        .select()
+        .single();
         
-        const replyMessage: Message = {
-          id: `new-reply-${Date.now()}`,
-          content: randomReply,
-          sender: "them",
-          timestamp: new Date(),
-          status: "delivered",
-        };
-        
-        setMessages(prev => [...prev, replyMessage]);
-      }, 4000);
+      if (messageError) {
+        toast({
+          title: "Failed to send message",
+          description: messageError.message,
+          variant: "destructive",
+        });
+        return;
+      }
+      
+      // Reset form
+      setMessage("");
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    } catch (error) {
+      console.error("Error sending message:", error);
+      toast({
+        title: "Error",
+        description: "Failed to send message",
+        variant: "destructive",
+      });
     }
   };
 
@@ -234,6 +326,12 @@ const Conversation = () => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
+    } else {
+      // Update typing status when user is typing
+      updateTypingStatus(true);
+      
+      // Clear typing status after a delay
+      setTimeout(() => updateTypingStatus(false), 3000);
     }
   };
 
@@ -241,114 +339,190 @@ const Conversation = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     
-    // In a real app, you would upload the file to storage
-    // For now, we'll create a blob URL
-    const imageUrl = URL.createObjectURL(file);
-    
-    const newMessage: Message = {
-      id: `new-${Date.now()}`,
-      content: "",
-      sender: "me",
-      timestamp: new Date(),
-      status: "sent",
-      media: {
-        type: "image",
-        url: imageUrl,
-        oneTimeView: false,
+    // Check file size (limit to 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      toast({
+        title: "File too large",
+        description: "Please select an image under 5MB",
+        variant: "destructive",
+      });
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
       }
-    };
+      return;
+    }
     
-    setMessages(prev => [...prev, newMessage]);
-    
-    // Reset file input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+    // Check file type
+    if (!file.type.startsWith("image/")) {
+      toast({
+        title: "Invalid file",
+        description: "Please select an image file",
+        variant: "destructive",
+      });
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return;
     }
   };
 
-  const handleViewOneTimeMedia = (messageId: string) => {
-    // Mark the media as viewed
+  const handleViewOneTimeMedia = async (messageId: string) => {
+    if (!user) return;
+    
+    // Mark the media as viewed in database
+    await supabase
+      .from("messages")
+      .update({
+        media_url: null,
+        content: "This media has expired"
+      })
+      .eq("id", messageId);
+      
+    // Update UI
     setMessages(prev => 
       prev.map(msg => 
-        msg.id === messageId && msg.media?.oneTimeView
-          ? { ...msg, media: { ...msg.media, viewed: true } } 
+        msg.id === messageId
+          ? { ...msg, content: "This media has expired", media_url: null }
           : msg
       )
     );
     
-    // After a short delay, remove the media
-    setTimeout(() => {
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === messageId
-            ? { ...msg, content: "This media has expired", media: undefined }
-            : msg
-        )
-      );
-      
-      toast({
-        title: "Media expired",
-        description: "The one-time view media has expired",
-      });
-    }, 5000);
+    toast({
+      title: "Media expired",
+      description: "The one-time view media has expired",
+    });
   };
 
-  const handleReaction = (messageId: string, emoji: string) => {
-    setMessages(prev => 
-      prev.map(msg => {
-        if (msg.id === messageId) {
-          // Check if this reaction already exists
-          const existingReactionIndex = msg.reactions?.findIndex(
-            r => r.emoji === emoji && r.by === "me"
-          );
+  const handleReaction = async (messageId: string, emoji: string) => {
+    if (!user) return;
+    
+    try {
+      // Check if this reaction already exists
+      const { data: existingReaction, error: existingError } = await supabase
+        .from("reactions")
+        .select("*")
+        .eq("message_id", messageId)
+        .eq("user_id", user.id)
+        .eq("emoji", emoji)
+        .maybeSingle();
+        
+      if (existingError) {
+        console.error("Error checking reaction:", existingError);
+        return;
+      }
+      
+      if (existingReaction) {
+        // Remove the reaction
+        const { error: deleteError } = await supabase
+          .from("reactions")
+          .delete()
+          .eq("id", existingReaction.id);
           
-          if (existingReactionIndex !== undefined && existingReactionIndex >= 0) {
-            // Remove the reaction
-            const newReactions = [...(msg.reactions || [])];
-            newReactions.splice(existingReactionIndex, 1);
-            return { ...msg, reactions: newReactions.length ? newReactions : undefined };
-          } else {
-            // Add the reaction
-            return {
-              ...msg,
-              reactions: [
-                ...(msg.reactions || []),
-                { emoji, by: "me" }
-              ]
-            };
-          }
+        if (deleteError) {
+          console.error("Error removing reaction:", deleteError);
+          return;
         }
-        return msg;
-      })
-    );
+        
+        // Update UI
+        setMessages(prev => 
+          prev.map(msg => {
+            if (msg.id === messageId && msg.reactions) {
+              return {
+                ...msg,
+                reactions: msg.reactions.filter(r => r.id !== existingReaction.id)
+              };
+            }
+            return msg;
+          })
+        );
+      } else {
+        // Add the reaction
+        const { data: newReaction, error: insertError } = await supabase
+          .from("reactions")
+          .insert({
+            message_id: messageId,
+            user_id: user.id,
+            emoji
+          })
+          .select()
+          .single();
+          
+        if (insertError) {
+          console.error("Error adding reaction:", insertError);
+          return;
+        }
+        
+        // Update UI manually (the real-time update will come later)
+        setMessages(prev => 
+          prev.map(msg => {
+            if (msg.id === messageId) {
+              return {
+                ...msg,
+                reactions: [...(msg.reactions || []), newReaction]
+              };
+            }
+            return msg;
+          })
+        );
+      }
+    } catch (error) {
+      console.error("Error handling reaction:", error);
+    }
     
     setReactingToMessageId(null);
     setShowEmojiPicker(false);
   };
 
-  const handleMessageDisappear = (messageId: string) => {
-    setMessages(prev => prev.filter(msg => msg.id !== messageId));
+  const handleMessageDisappear = async (messageId: string) => {
+    try {
+      // Delete the message from the database
+      await supabase
+        .from("messages")
+        .delete()
+        .eq("id", messageId);
+        
+      // Update UI
+      setMessages(prev => prev.filter(msg => msg.id !== messageId));
+    } catch (error) {
+      console.error("Error deleting disappeared message:", error);
+    }
   };
 
-  const formatTime = (date: Date) => {
+  const formatTime = (dateStr: string | null) => {
+    if (!dateStr) return "";
+    
+    const date = new Date(dateStr);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  const renderMessageStatus = (status: Message["status"]) => {
-    switch (status) {
-      case "sent":
-        return <Check size={14} className="text-white/70" />;
-      case "delivered":
-        return <CheckCheck size={14} className="text-white/70" />;
-      case "read":
-        return <CheckCheck size={14} className="text-ice-accent" />;
+  const renderMessageStatus = (message: Message) => {
+    if (message.sender_id !== user?.id) return null;
+    
+    if (message.read_at) {
+      return <CheckCheck size={14} className="text-ice-accent" />;
+    } else {
+      return <Check size={14} className="text-white/70" />;
     }
   };
+
+  if (loading) {
+    return (
+      <GlassContainer className="w-full max-w-md h-full flex items-center justify-center">
+        <p className="text-white">Loading conversation...</p>
+      </GlassContainer>
+    );
+  }
 
   if (!contact) {
     return (
       <GlassContainer className="w-full max-w-md h-full flex items-center justify-center">
         <p className="text-white">Conversation not found</p>
+        <GlassButton 
+          className="mt-4"
+          onClick={() => navigate("/chats")}
+        >
+          Back to Chats
+        </GlassButton>
       </GlassContainer>
     );
   }
@@ -389,10 +563,10 @@ const Conversation = () => {
         <div className="space-y-4">
           {messages.map((msg) => (
             <div key={msg.id} className="relative group">
-              {msg.isDisappearing ? (
+              {msg.disappear_after ? (
                 <DisappearingMessage
-                  className={msg.sender === "me" ? "message-sent" : "message-received"}
-                  duration={msg.disappearAfter || 10}
+                  className={msg.sender_id === user?.id ? "message-sent" : "message-received"}
+                  duration={msg.disappear_after}
                   onDisappear={() => handleMessageDisappear(msg.id)}
                 >
                   <div className="flex items-start">
@@ -401,10 +575,10 @@ const Conversation = () => {
                   </div>
                 </DisappearingMessage>
               ) : (
-                <div className={msg.sender === "me" ? "message-sent" : "message-received"}>
-                  {msg.media && (
+                <div className={msg.sender_id === user?.id ? "message-sent" : "message-received"}>
+                  {msg.media_url && (
                     <div className="mb-2 relative">
-                      {msg.media.oneTimeView && !msg.media.viewed ? (
+                      {msg.is_one_time_view ? (
                         <div className="relative">
                           <div className="absolute inset-0 bg-black/40 backdrop-blur-md flex items-center justify-center">
                             <GlassButton 
@@ -416,18 +590,14 @@ const Conversation = () => {
                             </GlassButton>
                           </div>
                           <img 
-                            src={msg.media.url} 
+                            src={msg.media_url} 
                             alt="One-time view media" 
                             className="w-full rounded-lg opacity-30 max-h-60 object-cover"
                           />
                         </div>
-                      ) : msg.media.viewed ? (
-                        <div className="bg-black/20 w-full h-40 rounded-lg flex items-center justify-center">
-                          <p className="text-white/70">Media expired</p>
-                        </div>
                       ) : (
                         <img 
-                          src={msg.media.url} 
+                          src={msg.media_url} 
                           alt="Media" 
                           className="w-full rounded-lg max-h-60 object-cover"
                         />
@@ -439,15 +609,15 @@ const Conversation = () => {
                   
                   <div className="flex items-center justify-end mt-1 space-x-1">
                     <span className="text-white/60 text-xs">
-                      {formatTime(msg.timestamp)}
+                      {formatTime(msg.created_at)}
                     </span>
-                    {msg.sender === "me" && renderMessageStatus(msg.status)}
+                    {renderMessageStatus(msg)}
                   </div>
                   
                   {msg.reactions && msg.reactions.length > 0 && (
                     <div className="flex mt-1 space-x-1">
-                      {msg.reactions.map((reaction, index) => (
-                        <span key={index} className="text-sm bg-white/10 px-1 rounded">
+                      {msg.reactions.map((reaction) => (
+                        <span key={reaction.id} className="text-sm bg-white/10 px-1 rounded">
                           {reaction.emoji}
                         </span>
                       ))}
@@ -456,7 +626,7 @@ const Conversation = () => {
                 </div>
               )}
               
-              {!msg.isDisappearing && (
+              {!msg.disappear_after && (
                 <div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity">
                   <GlassButton
                     size="sm"
@@ -526,7 +696,7 @@ const Conversation = () => {
           />
           
           <GlassButton
-            disabled={!message.trim()}
+            disabled={!message.trim() && (!fileInputRef.current || !fileInputRef.current.files?.length)}
             onClick={handleSendMessage}
             className="bg-ice-accent/20 hover:bg-ice-accent/40"
           >

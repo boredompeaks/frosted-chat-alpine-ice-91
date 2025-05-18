@@ -10,73 +10,141 @@ import { supabase } from "@/integrations/supabase/client";
 interface ChatPreview {
   id: string;
   username: string;
-  lastMessage: string;
-  timestamp: Date;
+  lastMessage: string | null;
+  timestamp: Date | null;
   unread: number;
-  status?: string;
+  status?: string | null;
+  otherUserId: string;
 }
 
 const ChatList = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [chats, setChats] = useState<ChatPreview[]>([]);
+  const [loading, setLoading] = useState(true);
   const { toast } = useToast();
   const navigate = useNavigate();
   const { signOut, user, profile } = useAuth();
 
   useEffect(() => {
-    // Fetch chats from Supabase for a real implementation
-    // This is just a placeholder for now
-    const mockChats: ChatPreview[] = [
-      {
-        id: "1",
-        username: "Alice",
-        lastMessage: "Hey, how are you doing?",
-        timestamp: new Date(Date.now() - 1000 * 60 * 5), // 5 minutes ago
-        unread: 2,
-        status: "Just saw a beautiful sunset!"
-      },
-      {
-        id: "2",
-        username: "Bob",
-        lastMessage: "Can we meet tomorrow?",
-        timestamp: new Date(Date.now() - 1000 * 60 * 60), // 1 hour ago
-        unread: 0,
-      },
-      {
-        id: "3",
-        username: "Charlie",
-        lastMessage: "I'll send you the documents later",
-        timestamp: new Date(Date.now() - 1000 * 60 * 60 * 3), // 3 hours ago
-        unread: 1,
-        status: "Busy with work"
-      }
-    ];
+    if (!user) return;
     
-    setChats(mockChats);
-    
-    // In a real implementation, you would fetch chats from Supabase
-    // For example:
-    /*
     const fetchChats = async () => {
       try {
-        const { data: participations, error } = await supabase
-          .from('chat_participants')
-          .select('chat_id')
-          .eq('user_id', user?.id);
-          
-        if (error) throw error;
+        setLoading(true);
         
-        // For each chat, get the other participant and last message
-        // This would require more complex queries in a real app
+        // Get all chats the user participates in
+        const { data: participations, error: partError } = await supabase
+          .from("chat_participants")
+          .select("chat_id")
+          .eq("user_id", user.id);
+        
+        if (partError) {
+          console.error("Error fetching participations:", partError);
+          return;
+        }
+
+        if (!participations || participations.length === 0) {
+          setChats([]);
+          setLoading(false);
+          return;
+        }
+
+        const chatIds = participations.map(p => p.chat_id);
+        
+        // For each chat, find the other participant
+        const chatPreviews: ChatPreview[] = [];
+        
+        for (const chatId of chatIds) {
+          // Get the other user in this chat
+          const { data: otherParticipants, error: otherPartError } = await supabase
+            .from("chat_participants")
+            .select("user_id")
+            .eq("chat_id", chatId)
+            .neq("user_id", user.id);
+          
+          if (otherPartError || !otherParticipants || otherParticipants.length === 0) {
+            console.error("Error fetching other participant:", otherPartError);
+            continue;
+          }
+          
+          const otherUserId = otherParticipants[0].user_id;
+          
+          // Get the other user's profile
+          const { data: otherProfile, error: profileError } = await supabase
+            .from("profiles")
+            .select("username, status")
+            .eq("id", otherUserId)
+            .single();
+            
+          if (profileError || !otherProfile) {
+            console.error("Error fetching profile:", profileError);
+            continue;
+          }
+          
+          // Get the latest message in this chat
+          const { data: latestMessage, error: msgError } = await supabase
+            .from("messages")
+            .select("content, created_at, sender_id")
+            .eq("chat_id", chatId)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .single();
+            
+          // Count unread messages
+          const { count: unreadCount, error: unreadError } = await supabase
+            .from("messages")
+            .select("id", { count: 'exact', head: true })
+            .eq("chat_id", chatId)
+            .neq("sender_id", user.id)
+            .is("read_at", null);
+            
+          chatPreviews.push({
+            id: chatId,
+            username: otherProfile.username,
+            lastMessage: latestMessage?.content || "Start a conversation",
+            timestamp: latestMessage ? new Date(latestMessage.created_at) : null,
+            unread: unreadCount || 0,
+            status: otherProfile.status,
+            otherUserId: otherUserId
+          });
+        }
+        
+        // Sort by latest message
+        chatPreviews.sort((a, b) => {
+          if (!a.timestamp) return 1;
+          if (!b.timestamp) return -1;
+          return b.timestamp.getTime() - a.timestamp.getTime();
+        });
+        
+        setChats(chatPreviews);
       } catch (error) {
-        console.error('Error fetching chats:', error);
+        console.error("Error fetching chats:", error);
+      } finally {
+        setLoading(false);
       }
     };
     
-    if (user) {
-      fetchChats();
-    }
-    */
+    fetchChats();
+    
+    // Set up real-time listener for new messages
+    const channel = supabase
+      .channel('chat_updates')
+      .on('postgres_changes', 
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages'
+        }, 
+        () => {
+          // Refresh chat list on new message
+          fetchChats();
+        }
+      )
+      .subscribe();
+      
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user]);
 
   const filteredChats = chats.filter(chat => 
@@ -92,7 +160,9 @@ const ChatList = () => {
     }
   };
 
-  const formatTime = (date: Date) => {
+  const formatTime = (date: Date | null) => {
+    if (!date) return "";
+    
     const now = new Date();
     const diff = now.getTime() - date.getTime();
     
@@ -158,7 +228,11 @@ const ChatList = () => {
       
       <div className="flex-1 overflow-y-auto px-4 pb-4">
         <div className="space-y-3">
-          {filteredChats.length > 0 ? (
+          {loading ? (
+            <div className="text-center py-10">
+              <p className="text-white/60">Loading chats...</p>
+            </div>
+          ) : filteredChats.length > 0 ? (
             filteredChats.map((chat) => (
               <GlassCard 
                 key={chat.id}
@@ -200,6 +274,7 @@ const ChatList = () => {
           ) : (
             <div className="text-center py-10">
               <p className="text-white/60">No chats found</p>
+              <p className="text-white/40 text-sm mt-2">Start a new chat to connect with someone</p>
             </div>
           )}
         </div>
