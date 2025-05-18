@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { GlassContainer, GlassTextarea, GlassButton, GlassCard, GlassBadge, TypingIndicator, DisappearingMessage } from "@/components/ui/glassmorphism";
@@ -52,6 +51,8 @@ const Conversation = () => {
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  const typingTimeout = useRef<NodeJS.Timeout | null>(null);
   
   useEffect(() => {
     if (!chatId || !user) return;
@@ -226,12 +227,17 @@ const Conversation = () => {
   const updateTypingStatus = async (isTyping: boolean) => {
     if (!chatId || !user) return;
     
-    const channel = supabase.channel(`presence:${chatId}`);
-    
-    await channel.track({
-      user_id: user.id,
-      is_typing: isTyping
-    });
+    try {
+      const channel = supabase.channel(`presence:${chatId}`);
+      
+      await channel.track({
+        user_id: user.id,
+        is_typing: isTyping,
+        username: contact?.username || "User"
+      });
+    } catch (error) {
+      console.error("Error updating typing status:", error);
+    }
   };
 
   useEffect(() => {
@@ -331,7 +337,8 @@ const Conversation = () => {
       updateTypingStatus(true);
       
       // Clear typing status after a delay
-      setTimeout(() => updateTypingStatus(false), 3000);
+      clearTimeout(typingTimeout.current);
+      typingTimeout.current = setTimeout(() => updateTypingStatus(false), 3000);
     }
   };
 

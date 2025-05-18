@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { GlassContainer, GlassInput, GlassButton, GlassCard } from "@/components/ui/glassmorphism";
@@ -21,6 +20,7 @@ const NewChat = () => {
   const { toast } = useToast();
   const { user } = useAuth();
 
+  // Improve user search with proper error handling and loading states
   useEffect(() => {
     if (!user) return;
     
@@ -42,12 +42,22 @@ const NewChat = () => {
         
         if (error) {
           console.error("Error searching users:", error);
+          toast({
+            title: "Search error",
+            description: "Failed to search users. Please try again.",
+            variant: "destructive",
+          });
           return;
         }
         
         setUsers(data || []);
       } catch (error) {
         console.error("Error fetching users:", error);
+        toast({
+          title: "Error",
+          description: "Something went wrong while searching for users.",
+          variant: "destructive",
+        });
       } finally {
         setLoading(false);
       }
@@ -59,19 +69,21 @@ const NewChat = () => {
     }, 300);
     
     return () => clearTimeout(timer);
-  }, [searchQuery, user]);
+  }, [searchQuery, user, toast]);
 
   const handleStartChat = async (otherUserId: string) => {
     if (!user) return;
     
     try {
+      setLoading(true);
+      
       // Check if a chat already exists between these users
-      const { data: existingChats, error: findError } = await supabase
+      const { data: existingChatsData, error: partError } = await supabase
         .from("chat_participants")
         .select("chat_id")
         .eq("user_id", user.id);
       
-      if (findError) {
+      if (partError) {
         toast({
           title: "Error",
           description: "Failed to check existing chats",
@@ -80,9 +92,9 @@ const NewChat = () => {
         return;
       }
       
-      if (existingChats && existingChats.length > 0) {
+      if (existingChatsData && existingChatsData.length > 0) {
         // For each chat the current user is in, check if the other user is also in it
-        for (const chat of existingChats) {
+        for (const chat of existingChatsData) {
           const { data: otherParticipant, error: checkError } = await supabase
             .from("chat_participants")
             .select("*")
@@ -98,7 +110,7 @@ const NewChat = () => {
         }
       }
       
-      // Create a new chat
+      // Create a new chat with better error handling
       const { data: newChat, error: chatError } = await supabase
         .from("chats")
         .insert({})
@@ -152,6 +164,8 @@ const NewChat = () => {
         description: "Something went wrong",
         variant: "destructive",
       });
+    } finally {
+      setLoading(false);
     }
   };
 
