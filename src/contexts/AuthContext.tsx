@@ -3,6 +3,8 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 import { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { cleanupAuthState } from "@/utils/authUtils";
+import { useProfileData } from "@/hooks/useProfileData";
 
 interface AuthContextProps {
   session: Session | null;
@@ -17,32 +19,14 @@ interface AuthContextProps {
 
 const AuthContext = createContext<AuthContextProps | undefined>(undefined);
 
-// Utility function to clean up auth state
-const cleanupAuthState = () => {
-  // Remove standard auth tokens
-  localStorage.removeItem('supabase.auth.token');
-  
-  // Remove all Supabase auth keys from localStorage
-  Object.keys(localStorage).forEach((key) => {
-    if (key.startsWith('supabase.auth.') || key.includes('sb-')) {
-      localStorage.removeItem(key);
-    }
-  });
-  
-  // Remove from sessionStorage if in use
-  Object.keys(sessionStorage || {}).forEach((key) => {
-    if (key.startsWith('supabase.auth.') || key.includes('sb-')) {
-      sessionStorage.removeItem(key);
-    }
-  });
-};
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
+
+  // Get profile data using our new hook
+  const { profile, refreshProfile } = useProfileData(user?.id);
 
   useEffect(() => {
     // Set up auth state listener
@@ -51,16 +35,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.log("Auth state changed:", event, session?.user?.id);
         setSession(session);
         setUser(session?.user ?? null);
-        
-        // Fetch user profile if user is logged in
-        if (session?.user) {
-          // Use setTimeout to avoid potential deadlocks
-          setTimeout(() => {
-            fetchProfile(session.user.id);
-          }, 0);
-        } else {
-          setProfile(null);
-        }
       }
     );
 
@@ -69,11 +43,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.log("Initial session check:", session?.user?.id);
       setSession(session);
       setUser(session?.user ?? null);
-      
-      if (session?.user) {
-        fetchProfile(session.user.id);
-      }
-      
       setLoading(false);
     });
 
@@ -81,27 +50,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       subscription.unsubscribe();
     };
   }, []);
-
-  const fetchProfile = async (userId: string) => {
-    try {
-      console.log("Fetching profile for user:", userId);
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", userId)
-        .single();
-
-      if (error) {
-        console.error("Error fetching profile:", error);
-        return;
-      }
-
-      console.log("Profile fetched:", data);
-      setProfile(data);
-    } catch (error) {
-      console.error("Error fetching profile:", error);
-    }
-  };
 
   const signIn = async (email: string, password: string) => {
     try {
@@ -213,10 +161,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateProfile = async (updates: any) => {
     try {
+      if (!user) {
+        throw new Error("No user authenticated");
+      }
+      
       const { error } = await supabase
         .from("profiles")
         .update(updates)
-        .eq("id", user?.id);
+        .eq("id", user.id);
 
       if (error) {
         toast({
@@ -228,9 +180,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       // Refresh profile data
-      if (user) {
-        fetchProfile(user.id);
-      }
+      refreshProfile();
 
       toast({
         title: "Profile updated",

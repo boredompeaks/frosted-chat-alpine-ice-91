@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { GlassContainer, GlassInput, GlassButton, GlassCard } from "@/components/ui/glassmorphism";
@@ -20,25 +21,27 @@ const NewChat = () => {
   const { toast } = useToast();
   const { user } = useAuth();
 
-  // Improve user search with proper error handling and loading states
+  // Improved user search with proper error handling and loading states
   useEffect(() => {
     if (!user) return;
     
     const fetchUsers = async () => {
-      if (!searchQuery.trim()) {
-        setUsers([]);
-        return;
-      }
-      
       try {
         setLoading(true);
-        // Find users that match the search query but exclude the current user
-        const { data, error } = await supabase
+        
+        // If query is empty, fetch all users except current user
+        // This ensures all users are shown by default
+        const query = supabase
           .from("profiles")
           .select("id, username, status")
-          .neq("id", user.id)
-          .ilike("username", `%${searchQuery}%`)
-          .limit(10);
+          .neq("id", user.id);
+          
+        // Only apply the search filter if there is a query
+        if (searchQuery.trim()) {
+          query.ilike("username", `%${searchQuery}%`);
+        }
+        
+        const { data, error } = await query.limit(20);
         
         if (error) {
           console.error("Error searching users:", error);
@@ -50,6 +53,7 @@ const NewChat = () => {
           return;
         }
         
+        console.log("Found users:", data);
         setUsers(data || []);
       } catch (error) {
         console.error("Error fetching users:", error);
@@ -227,13 +231,9 @@ const NewChat = () => {
                 </GlassButton>
               </GlassCard>
             ))
-          ) : searchQuery ? (
-            <div className="text-center py-10">
-              <p className="text-white/60">No users found</p>
-            </div>
           ) : (
             <div className="text-center py-10">
-              <p className="text-white/60">Search for users to start a chat</p>
+              <p className="text-white/60">No users found</p>
             </div>
           )}
         </div>

@@ -1,19 +1,14 @@
 
-import React, { useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import React from "react";
 import LoginForm from "@/components/auth/LoginForm";
 import { useAuth } from "@/contexts/AuthContext";
+import { useAuthRedirect } from "@/hooks/useAuthRedirect";
 
 const LoginPage = () => {
-  const { user, loading } = useAuth();
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    // If user is already logged in, redirect to chats
-    if (user && !loading) {
-      navigate("/chats");
-    }
-  }, [user, loading, navigate]);
+  const { loading } = useAuth();
+  
+  // This will only redirect if the user is authenticated AND on the login page
+  useAuthRedirect("/chats", false);
 
   // Show nothing while checking authentication status
   if (loading) {
