@@ -1,7 +1,8 @@
+
 import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { GlassContainer, GlassButton } from "@/components/ui/glassmorphism";
-import { ShieldCheck, LockClosed, MessageSquare } from "lucide-react";
+import { ShieldCheck, Lock, MessageSquare } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 const Index = () => {
@@ -34,7 +35,7 @@ const Index = () => {
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
             <div className="flex flex-col items-center p-4 glass">
-              <LockClosed className="text-ice-accent h-6 w-6 mb-2" />
+              <Lock className="text-ice-accent h-6 w-6 mb-2" />
               <h3 className="text-white font-medium mb-1">Private</h3>
               <p className="text-white/70 text-sm">End-to-end encrypted messages</p>
             </div>
