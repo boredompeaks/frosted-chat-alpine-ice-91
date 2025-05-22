@@ -12,7 +12,7 @@ interface MessageProps {
   disappear_after: number | null;
   is_one_time_view: boolean | null;
   media_url: string | null;
-  reactions: any[] | undefined;
+  reactions?: any[] | undefined; // Made optional with ?
   currentUserId: string | undefined;
   onReaction: (messageId: string) => void;
   onDisappear: (messageId: string) => void;

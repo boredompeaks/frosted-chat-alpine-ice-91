@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { GlassContainer, GlassButton, TypingIndicator } from "@/components/ui/glassmorphism";
@@ -227,10 +226,22 @@ const Conversation = () => {
       .subscribe();
   };
 
+  // Replace this cleanup function
   const cleanupRealtimeSubscriptions = (chatId: string) => {
-    supabase.removeChannel(supabase.getChannel(`chat:${chatId}:messages`));
-    supabase.removeChannel(supabase.getChannel(`chat:${chatId}:reactions`));
-    supabase.removeChannel(supabase.getChannel(`presence:${chatId}`));
+    const messageChannel = supabase.getChannels().find(
+      (channel) => channel.topic === `chat:${chatId}:messages`
+    );
+    if (messageChannel) supabase.removeChannel(messageChannel);
+
+    const reactionChannel = supabase.getChannels().find(
+      (channel) => channel.topic === `chat:${chatId}:reactions`
+    );
+    if (reactionChannel) supabase.removeChannel(reactionChannel);
+
+    const presenceChannel = supabase.getChannels().find(
+      (channel) => channel.topic === `presence:${chatId}`
+    );
+    if (presenceChannel) supabase.removeChannel(presenceChannel);
   };
 
   const updateTypingStatus = async (isTyping: boolean) => {
