@@ -1,156 +1,11 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { GlassContainer, GlassCard, GlassBadge, GlassInput, GlassButton } from "@/components/ui/glassmorphism";
-import { Bell, LogOut, Plus, Search, Settings } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { GlassContainer, GlassCard, GlassBadge } from "@/components/ui/glassmorphism";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
-
-// Types for better organization
-interface ChatPreview {
-  id: string;
-  username: string;
-  lastMessage: string | null;
-  timestamp: Date | null;
-  unread: number;
-  status?: string | null;
-  otherUserId: string;
-}
-
-// Hook for fetching chats - improves organization
-const useChatPreviews = (userId: string | undefined) => {
-  const [chats, setChats] = useState<ChatPreview[]>([]);
-  const [loading, setLoading] = useState(true);
-  const { toast } = useToast();
-  
-  const fetchChats = async () => {
-    if (!userId) return;
-    
-    try {
-      setLoading(true);
-      
-      // Get all chats the user participates in
-      const { data: participations, error: partError } = await supabase
-        .from("chat_participants")
-        .select("chat_id")
-        .eq("user_id", userId);
-      
-      if (partError) {
-        console.error("Error fetching participations:", partError);
-        return;
-      }
-
-      if (!participations || participations.length === 0) {
-        setChats([]);
-        return;
-      }
-
-      const chatIds = participations.map(p => p.chat_id);
-      const chatPreviews: ChatPreview[] = [];
-      
-      for (const chatId of chatIds) {
-        // Get the other user in this chat
-        const { data: otherParticipants, error: otherPartError } = await supabase
-          .from("chat_participants")
-          .select("user_id")
-          .eq("chat_id", chatId)
-          .neq("user_id", userId);
-        
-        if (otherPartError || !otherParticipants || otherParticipants.length === 0) {
-          console.error("Error fetching other participant:", otherPartError);
-          continue;
-        }
-        
-        const otherUserId = otherParticipants[0].user_id;
-        
-        // Get the other user's profile
-        const { data: otherProfile, error: profileError } = await supabase
-          .from("profiles")
-          .select("username, status")
-          .eq("id", otherUserId)
-          .single();
-          
-        if (profileError || !otherProfile) {
-          console.error("Error fetching profile:", profileError);
-          continue;
-        }
-        
-        // Get the latest message in this chat
-        const { data: latestMessage, error: msgError } = await supabase
-          .from("messages")
-          .select("content, created_at, sender_id")
-          .eq("chat_id", chatId)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-          
-        // Count unread messages
-        const { count: unreadCount, error: unreadError } = await supabase
-          .from("messages")
-          .select("id", { count: 'exact', head: true })
-          .eq("chat_id", chatId)
-          .neq("sender_id", userId)
-          .is("read_at", null);
-          
-        chatPreviews.push({
-          id: chatId,
-          username: otherProfile.username,
-          lastMessage: latestMessage?.content || "Start a conversation",
-          timestamp: latestMessage ? new Date(latestMessage.created_at) : null,
-          unread: unreadCount || 0,
-          status: otherProfile.status,
-          otherUserId: otherUserId
-        });
-      }
-      
-      // Sort by latest message
-      chatPreviews.sort((a, b) => {
-        if (!a.timestamp) return 1;
-        if (!b.timestamp) return -1;
-        return b.timestamp.getTime() - a.timestamp.getTime();
-      });
-      
-      setChats(chatPreviews);
-    } catch (error) {
-      console.error("Error fetching chats:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load chats. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (userId) {
-      fetchChats();
-      
-      // Set up real-time listener for new messages
-      const channel = supabase
-        .channel('chat_updates')
-        .on('postgres_changes', 
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'messages'
-          }, 
-          () => {
-            // Refresh chat list on new message
-            fetchChats();
-          }
-        )
-        .subscribe();
-        
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
-  }, [userId]);
-
-  return { chats, loading, fetchChats };
-};
+import { useChatPreviews } from "@/hooks/useChatPreviews";
+import ChatHeader from "./ChatHeader";
+import SearchBar from "./SearchBar";
+import NewChatButton from "./NewChatButton";
 
 // Time helper function
 const formatTime = (date: Date | null) => {
@@ -177,66 +32,22 @@ const formatTime = (date: Date | null) => {
 const ChatList = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const navigate = useNavigate();
-  const { signOut, user, profile } = useAuth();
+  const { user } = useAuth();
   const { chats, loading } = useChatPreviews(user?.id);
 
   const filteredChats = chats.filter(chat => 
     chat.username.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleLogout = async () => {
-    try {
-      await signOut();
-    } catch (error) {
-      console.error("Logout error:", error);
-    }
-  };
-
   return (
     <GlassContainer className="w-full max-w-md h-full max-h-[90vh] flex flex-col">
-      <div className="flex items-center justify-between p-4 border-b border-white/10">
-        <h1 className="text-xl font-bold text-white">Secure Chats</h1>
-        <div className="flex gap-2">
-          <GlassButton
-            size="sm"
-            variant="ghost"
-            className="text-white/80 hover:text-white"
-            aria-label="Notifications"
-          >
-            <Bell size={20} />
-          </GlassButton>
-          <GlassButton
-            size="sm"
-            variant="ghost"
-            className="text-white/80 hover:text-white"
-            aria-label="Settings"
-            onClick={() => navigate("/settings")}
-          >
-            <Settings size={20} />
-          </GlassButton>
-          <GlassButton
-            size="sm"
-            variant="ghost"
-            className="text-white/80 hover:text-white"
-            aria-label="Logout"
-            onClick={handleLogout}
-          >
-            <LogOut size={20} />
-          </GlassButton>
-        </div>
-      </div>
+      <ChatHeader />
       
-      <div className="p-4">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-white/60" size={18} />
-          <GlassInput 
-            placeholder="Search contacts" 
-            className="pl-10"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
-      </div>
+      <SearchBar 
+        value={searchQuery}
+        onChange={setSearchQuery}
+        placeholder="Search contacts"
+      />
       
       <div className="flex-1 overflow-y-auto px-4 pb-4">
         {loading ? (
@@ -292,15 +103,7 @@ const ChatList = () => {
         )}
       </div>
       
-      <div className="p-4 border-t border-white/10">
-        <GlassButton
-          className="w-full bg-ice-accent/20 hover:bg-ice-accent/40 flex items-center justify-center gap-2"
-          onClick={() => navigate("/new-chat")}
-        >
-          <Plus size={18} />
-          <span>New Secure Chat</span>
-        </GlassButton>
-      </div>
+      <NewChatButton />
     </GlassContainer>
   );
 };
