@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { GlassContainer, GlassInput, GlassButton, GlassCard } from "@/components/ui/glassmorphism";
@@ -82,36 +81,50 @@ const NewChat = () => {
         .from("chat_participants")
         .select("chat_id")
         .eq("user_id", user.id);
-      
+
       if (partError) {
         console.error("Error fetching current user chats:", partError);
         toast({
           title: "Error",
-          description: "Failed to check existing chats",
+          description: `Failed to check existing chats: ${partError.message || partError}`,
           variant: "destructive",
         });
+        setLoading(false);
         return;
       }
-      
-      if (currentUserChats && currentUserChats.length > 0) {
-        // For each chat the current user is in, check if the other user is also in it
-        for (const chat of currentUserChats) {
-          const { data: otherParticipant, error: checkError } = await supabase
-            .from("chat_participants")
-            .select("*")
-            .eq("chat_id", chat.chat_id)
-            .eq("user_id", otherUserId)
-            .maybeSingle();
-          
-          if (!checkError && otherParticipant) {
-            // Chat already exists, navigate to it
-            console.log("Existing chat found:", chat.chat_id);
-            navigate(`/chats/${chat.chat_id}`);
-            return;
-          }
+      if (!currentUserChats) {
+        toast({
+          title: "Error",
+          description: "Failed to check existing chats (no data returned)",
+          variant: "destructive",
+        });
+        setLoading(false);
+        return;
+      }
+
+      // For each chat the current user is in, check if the other user is also in it
+      for (const chat of currentUserChats) {
+        const { data: otherParticipant, error: checkError } = await supabase
+          .from("chat_participants")
+          .select("*")
+          .eq("chat_id", chat.chat_id)
+          .eq("user_id", otherUserId)
+          .maybeSingle();
+
+        if (checkError) {
+          console.error("Error checking if participant exists in chat:", checkError, "for chat_id:", chat.chat_id, "for user:", otherUserId);
+          // On error, skip this chat and try the next
+          continue;
+        }
+        if (otherParticipant) {
+          // Chat already exists, navigate to it
+          console.log("Existing chat found:", chat.chat_id);
+          navigate(`/chats/${chat.chat_id}`);
+          setLoading(false);
+          return;
         }
       }
-      
+
       // Create a new chat
       console.log("Creating new chat...");
       const { data: newChat, error: chatError } = await supabase
@@ -124,9 +137,10 @@ const NewChat = () => {
         console.error("Error creating chat:", chatError);
         toast({
           title: "Error",
-          description: "Failed to create chat",
+          description: `Failed to create chat: ${chatError?.message || "Unknown error"}`,
           variant: "destructive",
         });
+        setLoading(false);
         return;
       }
       
@@ -150,9 +164,10 @@ const NewChat = () => {
         console.error("Error adding participants:", participantsError);
         toast({
           title: "Error",
-          description: "Failed to add participants to chat",
+          description: `Failed to add participants to chat: ${participantsError.message || participantsError}`,
           variant: "destructive",
         });
+        setLoading(false);
         return;
       }
       
@@ -165,11 +180,11 @@ const NewChat = () => {
       
       // Navigate to the new chat
       navigate(`/chats/${newChat.id}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error starting chat:", error);
       toast({
         title: "Error",
-        description: "Something went wrong",
+        description: `Something went wrong: ${error?.message || error}`,
         variant: "destructive",
       });
     } finally {
