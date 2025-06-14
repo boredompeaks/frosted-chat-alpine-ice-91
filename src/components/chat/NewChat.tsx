@@ -21,27 +21,26 @@ const NewChat = () => {
   const { toast } = useToast();
   const { user } = useAuth();
 
-  // Improved user search with proper error handling and loading states
   useEffect(() => {
     if (!user) return;
     
     const fetchUsers = async () => {
       try {
         setLoading(true);
+        console.log("Fetching users, current user ID:", user.id);
         
-        // If query is empty, fetch all users except current user
-        // This ensures all users are shown by default
-        const query = supabase
+        // Build query to get all users except current user
+        let query = supabase
           .from("profiles")
           .select("id, username, status")
           .neq("id", user.id);
           
         // Only apply the search filter if there is a query
         if (searchQuery.trim()) {
-          query.ilike("username", `%${searchQuery}%`);
+          query = query.ilike("username", `%${searchQuery}%`);
         }
         
-        const { data, error } = await query.limit(20);
+        const { data, error } = await query.order("username").limit(50);
         
         if (error) {
           console.error("Error searching users:", error);
@@ -67,12 +66,8 @@ const NewChat = () => {
       }
     };
     
-    // Add a small delay to avoid too many queries while typing
-    const timer = setTimeout(() => {
-      fetchUsers();
-    }, 300);
-    
-    return () => clearTimeout(timer);
+    // Fetch users immediately and then on search query change
+    fetchUsers();
   }, [searchQuery, user, toast]);
 
   const handleStartChat = async (otherUserId: string) => {
@@ -80,14 +75,16 @@ const NewChat = () => {
     
     try {
       setLoading(true);
+      console.log("Starting chat between", user.id, "and", otherUserId);
       
       // Check if a chat already exists between these users
-      const { data: existingChatsData, error: partError } = await supabase
+      const { data: currentUserChats, error: partError } = await supabase
         .from("chat_participants")
         .select("chat_id")
         .eq("user_id", user.id);
       
       if (partError) {
+        console.error("Error fetching current user chats:", partError);
         toast({
           title: "Error",
           description: "Failed to check existing chats",
@@ -96,9 +93,9 @@ const NewChat = () => {
         return;
       }
       
-      if (existingChatsData && existingChatsData.length > 0) {
+      if (currentUserChats && currentUserChats.length > 0) {
         // For each chat the current user is in, check if the other user is also in it
-        for (const chat of existingChatsData) {
+        for (const chat of currentUserChats) {
           const { data: otherParticipant, error: checkError } = await supabase
             .from("chat_participants")
             .select("*")
@@ -108,13 +105,15 @@ const NewChat = () => {
           
           if (!checkError && otherParticipant) {
             // Chat already exists, navigate to it
+            console.log("Existing chat found:", chat.chat_id);
             navigate(`/chats/${chat.chat_id}`);
             return;
           }
         }
       }
       
-      // Create a new chat with better error handling
+      // Create a new chat
+      console.log("Creating new chat...");
       const { data: newChat, error: chatError } = await supabase
         .from("chats")
         .insert({})
@@ -122,6 +121,7 @@ const NewChat = () => {
         .single();
       
       if (chatError || !newChat) {
+        console.error("Error creating chat:", chatError);
         toast({
           title: "Error",
           description: "Failed to create chat",
@@ -130,22 +130,24 @@ const NewChat = () => {
         return;
       }
       
+      console.log("New chat created:", newChat.id);
+      
       // Add both users to the chat
-      const { error: currentUserPartError } = await supabase
+      const { error: participantsError } = await supabase
         .from("chat_participants")
-        .insert({
-          chat_id: newChat.id,
-          user_id: user.id
-        });
+        .insert([
+          {
+            chat_id: newChat.id,
+            user_id: user.id
+          },
+          {
+            chat_id: newChat.id,
+            user_id: otherUserId
+          }
+        ]);
       
-      const { error: otherUserPartError } = await supabase
-        .from("chat_participants")
-        .insert({
-          chat_id: newChat.id,
-          user_id: otherUserId
-        });
-      
-      if (currentUserPartError || otherUserPartError) {
+      if (participantsError) {
+        console.error("Error adding participants:", participantsError);
         toast({
           title: "Error",
           description: "Failed to add participants to chat",
@@ -153,6 +155,8 @@ const NewChat = () => {
         });
         return;
       }
+      
+      console.log("Participants added successfully");
       
       toast({
         title: "Chat started",
@@ -191,7 +195,7 @@ const NewChat = () => {
         <div className="relative">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-white/60" size={18} />
           <GlassInput 
-            placeholder="Search for users" 
+            placeholder="Search for users by username" 
             className="pl-10"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -206,26 +210,27 @@ const NewChat = () => {
               <p className="text-white/60">Searching users...</p>
             </div>
           ) : users.length > 0 ? (
-            users.map((user) => (
+            users.map((userProfile) => (
               <GlassCard 
-                key={user.id}
+                key={userProfile.id}
                 className="flex items-center justify-between cursor-pointer"
               >
                 <div className="flex items-center">
                   <div className="w-12 h-12 rounded-full bg-ice-dark/50 border border-ice-accent/30 flex items-center justify-center text-lg font-medium">
-                    {user.username.charAt(0)}
+                    {userProfile.username.charAt(0)}
                   </div>
                   
                   <div className="ml-3">
-                    <h3 className="text-white font-medium">{user.username}</h3>
-                    <p className="text-white/60 text-sm">{user.status || "No status"}</p>
+                    <h3 className="text-white font-medium">{userProfile.username}</h3>
+                    <p className="text-white/60 text-sm">{userProfile.status || "Available"}</p>
                   </div>
                 </div>
                 
                 <GlassButton
                   size="sm"
                   className="bg-ice-accent/20 hover:bg-ice-accent/40"
-                  onClick={() => handleStartChat(user.id)}
+                  onClick={() => handleStartChat(userProfile.id)}
+                  disabled={loading}
                 >
                   <UserPlus size={18} />
                 </GlassButton>
@@ -233,7 +238,12 @@ const NewChat = () => {
             ))
           ) : (
             <div className="text-center py-10">
-              <p className="text-white/60">No users found</p>
+              <p className="text-white/60">
+                {searchQuery ? "No users found matching your search" : "No other users found"}
+              </p>
+              <p className="text-white/40 text-sm mt-2">
+                Try a different search term or check back later
+              </p>
             </div>
           )}
         </div>
