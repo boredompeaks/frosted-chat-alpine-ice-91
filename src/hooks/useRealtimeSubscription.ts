@@ -9,6 +9,7 @@ interface UseRealtimeSubscriptionProps {
   filter?: string;
 }
 
+// Fixes typing error with Supabase Realtime - see https://github.com/supabase/supabase-js/issues/822
 export const useRealtimeSubscription = ({
   table,
   event,
@@ -17,11 +18,11 @@ export const useRealtimeSubscription = ({
 }: UseRealtimeSubscriptionProps) => {
   useEffect(() => {
     // Supabase Realtime API: use "postgres_changes" event at channel level ("schema-db-changes" is the recommended channel name for table updates)
-    // See: https://supabase.com/docs/guides/realtime/channels-postgres-changes
+    // TypeScript types might not recognize 'postgres_changes' as valid, so cast as any to bypass error
     const channel = supabase
       .channel('schema-db-changes')
       .on(
-        'postgres_changes',
+        'postgres_changes' as any,
         {
           event,
           schema: 'public',
