@@ -13,9 +13,11 @@ export const useRealtimeSubscription = ({
   table,
   event,
   callback,
-  filter
+  filter,
 }: UseRealtimeSubscriptionProps) => {
   useEffect(() => {
+    // The new Realtime API expects the event handlers for database changes to be under "db", not the default system types
+    // The correct event is "postgres_changes" and you must use the "schema-db-changes" as channel name
     const channel = supabase
       .channel('schema-db-changes')
       .on(

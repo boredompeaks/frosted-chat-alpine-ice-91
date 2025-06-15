@@ -71,11 +71,11 @@ const NewChat = () => {
 
   const handleStartChat = async (otherUserId: string) => {
     if (!user) return;
-    
+
     try {
       setLoading(true);
       console.log("Starting chat between", user.id, "and", otherUserId);
-      
+
       // Check if a chat already exists between these users
       const { data: currentUserChats, error: partError } = await supabase
         .from("chat_participants")
@@ -103,26 +103,43 @@ const NewChat = () => {
       }
 
       // For each chat the current user is in, check if the other user is also in it
+      let foundExisting = false;
       for (const chat of currentUserChats) {
-        const { data: otherParticipant, error: checkError } = await supabase
-          .from("chat_participants")
-          .select("*")
-          .eq("chat_id", chat.chat_id)
-          .eq("user_id", otherUserId)
-          .maybeSingle();
+        try {
+          const { data: otherParticipant, error: checkError } = await supabase
+            .from("chat_participants")
+            .select("*")
+            .eq("chat_id", chat.chat_id)
+            .eq("user_id", otherUserId)
+            .maybeSingle();
 
-        if (checkError) {
-          console.error("Error checking if participant exists in chat:", checkError, "for chat_id:", chat.chat_id, "for user:", otherUserId);
-          // On error, skip this chat and try the next
+          if (checkError) {
+            // RLS policy may block this request if the current user is not a valid member--should be fixed now
+            console.error(
+              "Error checking if participant exists in chat:",
+              checkError,
+              "for chat_id:",
+              chat.chat_id,
+              "for user:",
+              otherUserId
+            );
+            continue;
+          }
+          if (otherParticipant) {
+            // Chat already exists, navigate to it
+            console.log("Existing chat found:", chat.chat_id);
+            navigate(`/chats/${chat.chat_id}`);
+            foundExisting = true;
+            break;
+          }
+        } catch (innerErr) {
+          console.error("Exception while checking participant in chat:", innerErr);
           continue;
         }
-        if (otherParticipant) {
-          // Chat already exists, navigate to it
-          console.log("Existing chat found:", chat.chat_id);
-          navigate(`/chats/${chat.chat_id}`);
-          setLoading(false);
-          return;
-        }
+      }
+      if (foundExisting) {
+        setLoading(false);
+        return;
       }
 
       // Create a new chat
@@ -132,7 +149,7 @@ const NewChat = () => {
         .insert({})
         .select()
         .single();
-      
+
       if (chatError || !newChat) {
         console.error("Error creating chat:", chatError);
         toast({
@@ -143,23 +160,23 @@ const NewChat = () => {
         setLoading(false);
         return;
       }
-      
+
       console.log("New chat created:", newChat.id);
-      
+
       // Add both users to the chat
       const { error: participantsError } = await supabase
         .from("chat_participants")
         .insert([
           {
             chat_id: newChat.id,
-            user_id: user.id
+            user_id: user.id,
           },
           {
             chat_id: newChat.id,
-            user_id: otherUserId
-          }
+            user_id: otherUserId,
+          },
         ]);
-      
+
       if (participantsError) {
         console.error("Error adding participants:", participantsError);
         toast({
@@ -170,14 +187,14 @@ const NewChat = () => {
         setLoading(false);
         return;
       }
-      
+
       console.log("Participants added successfully");
-      
+
       toast({
         title: "Chat started",
         description: "You can now start messaging securely",
       });
-      
+
       // Navigate to the new chat
       navigate(`/chats/${newChat.id}`);
     } catch (error: any) {
