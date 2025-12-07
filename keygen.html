@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>RSA Key Generator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+<body>
+    <h1>RSA Key Generator</h1>
+    <button onclick="generateKeys()">Generate Keys</button>
+    <pre id="output"></pre>
+
+    <script>
+        async function generateKeys() {
+            const output = document.getElementById('output');
+            
+            // Generate RSA key pair
+            const keyPair = await window.crypto.subtle.generateKey(
+                {
+                    name: "RSA-OAEP",
+                    modulusLength: 2048,
+                    publicExponent: new Uint8Array([1, 0, 1]),
+                    hash: "SHA-256",
+                },
+                true,
+                ["encrypt", "decrypt"]
+            );
+
+            const publicKey = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
+            const privateKey = await window.crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+
+            function arrayBufferToBase64(buffer) {
+                const bytes = new Uint8Array(buffer);
+                let binary = '';
+                for (let i = 0; i < bytes.byteLength; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                return btoa(binary);
+            }
+
+            const publicKeyBase64 = arrayBufferToBase64(publicKey);
+            const privateKeyBase64 = arrayBufferToBase64(privateKey);
+
+            // Encrypt private key with password
+            function encryptWithPassword(data, password) {
+                const key = CryptoJS.PBKDF2(password, "CalcIta_Salt_2024", {
+                    keySize: 8,
+                    iterations: 10000,
+                });
+                const iv = CryptoJS.lib.WordArray.random(12);
+                const encrypted = CryptoJS.AES.encrypt(data, key, {
+                    iv: iv,
+                    mode: CryptoJS.mode.GCM,
+                    padding: CryptoJS.pad.NoPadding,
+                });
+                return {
+                    ciphertext: encrypted.ciphertext.toString(CryptoJS.enc.Base64),
+                    iv: iv.toString(CryptoJS.enc.Base64),
+                    tag: encrypted.tag.toString(CryptoJS.enc.Base64),
+                };
+            }
+
+            const encrypted1 = encryptWithPassword(privateKeyBase64, 'notbored');
+            const encrypted2 = encryptWithPassword(privateKeyBase64, 'momo21');
+
+            const result = `
+=== KEY PAIR FOR USER 1 (password: notbored) ===
+Public Key: ${publicKeyBase64}
+
+Private Key Encrypted: ${JSON.stringify(encrypted1, null, 2)}
+
+=== KEY PAIR FOR USER 2 (password: momo21) ===
+Public Key: ${publicKeyBase64}
+
+Private Key Encrypted: ${JSON.stringify(encrypted2, null, 2)}
+            `;
+
+            output.textContent = result;
+            console.log(result);
+        }
+    </script>
+</body>
+</html>

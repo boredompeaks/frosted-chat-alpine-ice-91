@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Encrypt RSA Private Keys</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+<body>
+    <h1>Encrypt RSA Private Keys</h1>
+    <button onclick="encryptKeys()">Generate Encrypted Keys</button>
+    <pre id="output"></pre>
+
+    <script>
+        async function encryptKeys() {
+            // Base64 private key
+            const privateKeyBase64 = "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2UUlCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktjd2dnU2pBZ0VBQW9JQkFRRGgxS0lNT1pNNnVML2UKdGwrMXJ0OUVFWGNIN2wwSjhVQUptZkVFa013R3dVd0dCWDFmN3ZBbHQ0b3lTR211SnlXdWRKSytVdjFOKy9pZQoyejEwb3VrYTIzZDJLMmVCajlhUkhCa21kRHl1TEpVekwvekZRNm9Rb3hYV21jRjZodjNzaXJQYm9yaGw3Tng3CkxiTWg5dElBZkJqVVVkOFMrSXJqdXFlc2NXZ3hvU2c5UmM3b0ZDbWlrQnljUVJydkt0YnQxeE9uRkljTFRCR2UKMnVVUnJkc2VyZnk0ZURlNGx1SkgrdFY5OGEwL1pxRXZkRGd5WDN3OWhvZldSOFVpSDN5SDlZK3oraXBhRkRzMgp2Zm9aZ0M3VThtaXh5cEkwcUg4bjZJZHlhWENNQkhMc0tSNGhuL1d5Q2c0dy9Nb292OE5wS2swRDloSGljTndICk1TMEpIS283QWdNQkFBRUNnZ0VBSG1zUkxydGNtUGJFcFYrRVVja051ckh0aWd4eHpNS0pvU0Z5cE81S0JRanAKVUJCU1BHZEhRcFZQMElrUGJ3MUgxcEZPS01PdDZlQ3NNdDJPRUJWWGQ2NGpEN0ExLzI0YjlTekhPSFpFckNORwpMNEJodUVKdWVGSTNRVkl4ak9yODdlMGEzOVV4cUV6NHY4QytsYThVeDBydjN6MXQ0alRISkhpQ1dFaG9RL0xUCjNpQkpGU2VwY2JLU1JrY3cwT1h0cTJLRGhUVzlWaUkwNkZqbkdMTzhzQjhseUorSDNKamZvbEs4TW5vOG1XU2wKbDhoZHdZTnNBVkZsWFZuRFVTSXI1Z0daT1RqSkpyU3RkNFk2cjMzdnRnWmdTMmZNMHh5OFVoU3hoWlhSTk5IYgppVktqQThQakw3UWEwQzV4RGRxejNLdzZOOC9QdjBYZzYrRW1DVEoxQlFLQmdRRHd1allJWXhJNjUwTGNsaEZtClQ1R0FWS0Q3VWRQRDdXbnQrdVJNejBqYmNZWmVkdnRiMnFFVUhkT2wzYWlyMlliMTBLbWswdDd5WlZjQlc3RTQKZTEyVTk3YXQrQ1F3ZGNwc0VRYjd3S05Fc1lBSkpiVXFZenk2OXdvY1pCVjU5T05mY0xqNUJwMWIvcmMzZmt0TApIT3A0NER5U0NjdkZReTJaWU1YcHVaSVdwUUtCZ1FEd0tIbU1Sak5KeElKSEplbm1McTNsdzRncktZY0xBeG13CkpUR3Jnek5URG1sM1VLa0cxM3g5alh1YTh6THJaY0FsZ2N1OERLaGE5V1JNNzJYRUhoQ2YrSnB0MHliY2twMHUKRXVxOUMrdnlBMTZ6cDRQZ0hSL2NMZkI3ZmJWUENZaVJXa2trN3pHTm9qdm1JZU0xM3JPSFR2OTdVZ2tGRDd5WApoc05lUlZ6SFh3S0JnUURBZk9WL3gxaG9hVXQ1ZnpYaWpYVlhIRlN0SVQwbnljdU9VN1FDQnkzRzZ2djZ4VUV3CnJaMW5ySUgwZTAzSVBHUkNZdHVEeEdvcGdRY1ZPdkIyclk2aTg0RExrME84ekROVVBqbExUVHBBVDM2RjBmVVAKTTlMMzNWbmtZZE1hZGNycUlnU0dlOWVRSEJqODhxdmFJQUVOTHFEQVZienV1MHpXL0I3RlNYR2JVUUtCZ0N0NgptRzdkOHNFak01YmY5Vlc0RThHcVFjZldyOTA5aFhRUGQ4dWVhRGRjUDVuYlg0NmVpcXBNYUJsb2VFcUgxRjYxCi9nV2dvUVkrc1JjQXJJTHlFbjV6eXJtaFpjSy9SSGVuOHhtZ3crbS8xSEJnSG83L2x0b004eUhZWTIvWXdRSFgKdjdCUkliNkxwWjZIZWhReHFuMFB2MDg3VGVpOXJaNGRSdGVWWlRPdkFvR0FNbFpqMENHQW0rL0crU0J6aHdCZgpQQi92QXkzeFIvUk5uZVBYT1BRbU90emJJdTFpVWFkamJBS0dMSkFaMmpIa1VMaHNHSyt1eVE2OHdibEg5K1RHCkxNazBYdXc2b1VSSk1VWWlzcDdKMEszdW0xdzkxUjBpQzFtalJmTTlYZzdwM3FOa0RJMWsveEpzL2NmM0FrS3cKK3doVk5hY21ISS93aGVXQWc0OUU5SUU9Ci0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K";
+            
+            function encryptWithPassword(data, password) {
+                console.log("Encrypting with password:", password);
+                const key = CryptoJS.PBKDF2(password, "CalcIta_Salt_2024", {
+                    keySize: 8,
+                    iterations: 10000,
+                });
+                const iv = CryptoJS.lib.WordArray.random(12);
+                const encrypted = CryptoJS.AES.encrypt(data, key, {
+                    iv: iv,
+                    mode: CryptoJS.mode.GCM,
+                    padding: CryptoJS.pad.NoPadding,
+                });
+                return {
+                    ciphertext: encrypted.ciphertext.toString(CryptoJS.enc.Base64),
+                    iv: iv.toString(CryptoJS.enc.Base64),
+                    tag: encrypted.tag.toString(CryptoJS.enc.Base64),
+                };
+            }
+
+            const encrypted1 = encryptWithPassword(privateKeyBase64, 'notbored');
+            const encrypted2 = encryptWithPassword(privateKeyBase64, 'momo21');
+
+            const result = `
+=== USER 1 (password: notbored) ===
+Public Key: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUE0ZFNpRERtVE9yaS8zclpmdGE3ZgpSQkYzQis1ZENmRkFDWm54QkpETUJzRk1CZ1Y5WCs3d0piZUtNa2hwcmljbHJuU1N2bEw5VGZ2NG50czlkS0xwCkd0dDNkaXRuZ1kvV2tSd1pKblE4cml5Vk15Lzh4VU9xRUtNVjFwbkJlb2I5N0lxejI2SzRaZXpjZXkyeklmYlMKQUh3WTFGSGZFdmlLNDdxbnJIRm9NYUVvUFVYTzZCUXBvcEFjbkVFYTd5clc3ZGNUcHhTSEMwd1JudHJsRWEzYgpIcTM4dUhnM3VKYmlSL3JWZmZHdFAyYWhMM1E0TWw5OFBZYUgxa2ZGSWg5OGgvV1BzL29xV2hRN05yMzZHWUF1CjFQSm9zY3FTTktoL0oraUhjbWx3akFSeTdDa2VJWi8xc2dvT01QektLTC9EYVNwTkEvWVI0bkRjQnpFdENSeXEKT3dJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==
+
+Private Key Encrypted: ${JSON.stringify(encrypted1, null, 2)}
+
+=== USER 2 (password: momo21) ===
+Public Key: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUE0ZFNpRERtVE9yaS8zclpmdGE3ZgpSQkYzQis1ZENmRkFDWm54QkpETUJzRk1CZ1Y5WCs3d0piZUtNa2hwcmljbHJuU1N2bEw5VGZ2NG50czlkS0xwCkd0dDNkaXRuZ1kvV2tSd1pKblE4cml5Vk15Lzh4VU9xRUtNVjFwbkJlb2I5N0lxejI2SzRaZXpjZXkyeklmYlMKQUh3WTFGSGZFdmlLNDdxbnJIRm9NYUVvUFVYTzZCUXBvcEFjbkVFYTd5clc3ZGNUcHhTSEMwd1JudHJsRWEzYgpIcTM4dUhnM3VKYmlSL3JWZmZHdFAyYWhMM1E0TWw5OFBZYUgxa2ZGSWg5OGgvV1BzL29xV2hRN05yMzZHWUF1CjFQSm9zY3FTTktoL0oraUhjbWx3akFSeTdDa2VJWi8xc2dvT01QektLTC9EYVNwTkEvWVI0bkRjQnpFdENSeXEKT3dJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==
+
+Private Key Encrypted: ${JSON.stringify(encrypted2, null, 2)}
+
+=== SQL TO INSERT INTO DATABASE ===
+-- User 1 (notbored)
+INSERT INTO profiles (id, username, public_key, private_key_encrypted)
+VALUES (
+  'user-1-id-here',
+  'user1',
+  'LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUE0ZFNpRERtVE9yaS8zclpmdGE3ZgpSQkYzQis1ZENmRkFDWm54QkpETUJzRk1CZ1Y5WCs3d0piZUtNa2hwcmljbHJuU1N2bEw5VGZ2NG50czlkS0xwCkd0dDNkaXRuZ1kvV2tSd1pKblE4cml5Vk15Lzh4VU9xRUtNVjFwbkJlb2I5N0lxejI2SzRaZXpjZXkyeklmYlMKQUh3WTFGSGZFdmlLNDdxbnJIRm9NYUVvUFVYTzZCUXBvcEFjbkVFYTd5clc3ZGNUcHhTSEMwd1JudHJsRWEzYgpIcTM4dUhnM3VKYmlSL3JWZmZHdFAyYWhMM1E0TWw5OFBZYUgxa2ZGSWg5OGgvV1BzL29xV2hRN05yMzZHWUF1CjFQSm9zY3FTTktoL0oraUhjbWx3akFSeTdDa2VJWi8xc2dvT01QektLTC9EYVNwTkEvWVI0bkRjQnpFdENSeXEKT3dJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==',
+  '${JSON.stringify(encrypted1)}'
+);
+
+-- User 2 (momo21)
+INSERT INTO profiles (id, username, public_key, private_key_encrypted)
+VALUES (
+  'user-2-id-here',
+  'user2',
+  'LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUE0ZFNpRERtVE9yaS8zclpmdGE3ZgpSQkYzQis1ZENmRkFDWm54QkpETUJzRk1CZ1Y5WCs3d0piZUtNa2hwcmljbHJuU1N2bEw5VGZ2NG50czlkS0xwCkd0dDNkaXRuZ1kvV2tSd1pKblE4cml5Vk15Lzh4VU9xRUtNVjFwbkJlb2I5N0lxejI2SzRaZXpjZXkyeklmYlMKQUh3WTFGSGZFdmlLNDdxbnJIRm9NYUVvUFVYTzZCUXBvcEFjbkVFYTd5clc3ZGNUcHhTSEMwd1JudHJsRWEzYgpIcTM4dUhnM3VKYmlSL3JWZmZHdFAyYWhMM1E0TWw5OFBZYUgxa2ZGSWg5OGgvV1BzL29xV2hRN05yMzZHWUF1CjFQSm9zY3FTTktoL0oraUhjbWx3akFSeTdDa2VJWi8xc2dvT01QektLTC9EYVNwTkEvWVI0bkRjQnpFdENSeXEKT3dJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==',
+  '${JSON.stringify(encrypted2)}'
+);
+            `;
+
+            document.getElementById('output').textContent = result;
+            console.log(result);
+        }
+    </script>
+</body>
+</html>

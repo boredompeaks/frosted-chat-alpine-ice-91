@@ -1,0 +1,197 @@
+import { 
+  generateAESKey, 
+  encryptKeyWithRSA, 
+  decryptKeyWithRSA,
+  encryptMessage,
+  decryptMessage
+} from "@/lib/encryption/crypto";
+
+const AES_KEY_STORAGE_KEY = "frostedchat_aes_key";
+const LAST_KEY_EXCHANGE_KEY = "frostedchat_last_key_exchange";
+const AWAITING_KEY_EXCHANGE_KEY = "frostedchat_awaiting_exchange";
+
+// Generate new AES key
+export const createNewAESKey = (): string => {
+  const aesKey = generateAESKey();
+  localStorage.setItem(AES_KEY_STORAGE_KEY, aesKey);
+  localStorage.setItem(LAST_KEY_EXCHANGE_KEY, Date.now().toString());
+  localStorage.setItem(AWAITING_KEY_EXCHANGE_KEY, "false");
+  return aesKey;
+};
+
+// Get current AES key from localStorage
+export const getCurrentAESKey = (): string | null => {
+  return localStorage.getItem(AES_KEY_STORAGE_KEY);
+};
+
+// Validate if AES key exists and is valid
+export const isAESKeyValid = (): boolean => {
+  const key = getCurrentAESKey();
+  return key !== null && key.length > 0;
+};
+
+// Check if auto key exchange is needed (48 hours)
+export const shouldAutoExchangeKey = (): boolean => {
+  const lastExchange = localStorage.getItem(LAST_KEY_EXCHANGE_KEY);
+  if (!lastExchange) return true;
+  
+  const fortyEightHours = 48 * 60 * 60 * 1000;
+  const timeSince = Date.now() - parseInt(lastExchange);
+  
+  return timeSince > fortyEightHours;
+};
+
+// Get time until next auto key exchange
+export const getTimeUntilNextAutoExchange = (): number => {
+  const lastExchange = localStorage.getItem(LAST_KEY_EXCHANGE_KEY);
+  if (!lastExchange) return 0;
+  
+  const fortyEightHours = 48 * 60 * 60 * 1000;
+  const timeSince = Date.now() - parseInt(lastExchange);
+  const remaining = fortyEightHours - timeSince;
+  
+  return Math.max(0, remaining);
+};
+
+// Set awaiting key exchange flag
+export const setAwaitingKeyExchange = (awaiting: boolean): void => {
+  localStorage.setItem(AWAITING_KEY_EXCHANGE_KEY, awaiting.toString());
+};
+
+// Check if awaiting key exchange
+export const isAwaitingKeyExchange = (): boolean => {
+  return localStorage.getItem(AWAITING_KEY_EXCHANGE_KEY) === "true";
+};
+
+// Prepare AES key for sending (encrypt with recipient's public RSA key)
+export const prepareAESKeyForTransfer = async (
+  recipientPublicKey: string
+): Promise<{ encryptedKey: string; iv: string }> => {
+  let aesKey = getCurrentAESKey();
+  
+  if (!aesKey) {
+    aesKey = createNewAESKey();
+  }
+  
+  // Convert base64 key to ArrayBuffer
+  const keyBuffer = Uint8Array.from(atob(aesKey), c => c.charCodeAt(0));
+  
+  // Encrypt AES key with recipient's public RSA key
+  const encryptedBuffer = await encryptKeyWithRSA(keyBuffer, recipientPublicKey);
+  
+  // Convert back to base64
+  const encryptedKey = btoa(String.fromCharCode(...encryptedBuffer));
+  
+  // Generate IV for AES encryption
+  const iv = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+  
+  return {
+    encryptedKey,
+    iv
+  };
+};
+
+// Receive and install AES key (decrypt with our private RSA key)
+export const receiveAESKeyFromTransfer = async (
+  encryptedKey: string,
+  userPrivateKey: string
+): Promise<boolean> => {
+  try {
+    // Convert base64 to ArrayBuffer
+    const encryptedBuffer = Uint8Array.from(atob(encryptedKey), c => c.charCodeAt(0));
+    
+    // Decrypt AES key with our private RSA key
+    const decryptedBuffer = await decryptKeyWithRSA(encryptedBuffer, userPrivateKey);
+    
+    // Convert to base64
+    const aesKey = btoa(String.fromCharCode(...decryptedBuffer));
+    
+    // Store in localStorage
+    localStorage.setItem(AES_KEY_STORAGE_KEY, aesKey);
+    localStorage.setItem(LAST_KEY_EXCHANGE_KEY, Date.now().toString());
+    
+    return true;
+  } catch (error) {
+    console.error("Failed to receive AES key:", error);
+    return false;
+  }
+};
+
+// Encrypt message with current AES key
+export const encryptMessageWithAES = (message: string): { ciphertext: string; iv: string } | null => {
+  const aesKey = getCurrentAESKey();
+  
+  if (!aesKey) {
+    console.error("No AES key available for encryption");
+    return null;
+  }
+  
+  try {
+    const result = encryptMessage(message, aesKey);
+    return {
+      ciphertext: result.ciphertext,
+      iv: result.iv
+    };
+  } catch (error) {
+    console.error("Failed to encrypt message:", error);
+    return null;
+  }
+};
+
+// Decrypt message with current AES key
+export const decryptMessageWithAES = (ciphertext: string, iv: string): string | null => {
+  const aesKey = getCurrentAESKey();
+  
+  if (!aesKey) {
+    console.error("No AES key available for decryption");
+    return null;
+  }
+  
+  try {
+    return decryptMessage(ciphertext, iv, aesKey);
+  } catch (error) {
+    console.error("Failed to decrypt message:", error);
+    return null;
+  }
+};
+
+// Force clear all keys (for testing or logout)
+export const clearAllCryptoKeys = (): void => {
+  localStorage.removeItem(AES_KEY_STORAGE_KEY);
+  localStorage.removeItem(LAST_KEY_EXCHANGE_KEY);
+  localStorage.removeItem(AWAITING_KEY_EXCHANGE_KEY);
+};
+
+// Get encryption status for UI
+export const getEncryptionStatus = (): {
+  hasAESKey: boolean;
+  needsExchange: boolean;
+  timeRemaining: number;
+  isAwaiting: boolean;
+} => {
+  return {
+    hasAESKey: isAESKeyValid(),
+    needsExchange: shouldAutoExchangeKey(),
+    timeRemaining: getTimeUntilNextAutoExchange(),
+    isAwaiting: isAwaitingKeyExchange()
+  };
+};
+
+// Format time remaining for display
+export const formatTimeRemaining = (milliseconds: number): string => {
+  if (milliseconds <= 0) return "Exchange needed";
+  
+  const hours = Math.floor(milliseconds / (60 * 60 * 1000));
+  const minutes = Math.floor((milliseconds % (60 * 60 * 1000)) / (60 * 1000));
+  
+  if (hours > 24) {
+    const days = Math.floor(hours / 24);
+    return `${days} day${days > 1 ? 's' : ''}`;
+  }
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  
+  return `${minutes}m`;
+};

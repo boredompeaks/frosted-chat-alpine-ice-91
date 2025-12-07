@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "./use-toast";
@@ -6,10 +7,7 @@ import {
   encryptMessage,
   decryptMessage,
   getChatPassword,
-  hasChatPassword,
   getOrPromptPassword,
-  createEncryptedMessage,
-  decryptMessageWithMetadata,
 } from "@/lib/simpleE2EE";
 
 export interface Message {
@@ -42,7 +40,7 @@ export interface UseChatDataReturn {
   messages: Message[];
   loading: boolean;
   error: string | null;
-  sendMessage: (content: string, options?: MessageOptions) => Promise<void>;
+  sendMessage: (content: string, options?: MessageOptions) => Promise<boolean>;
   deleteMessage: (messageId: string) => Promise<void>;
   markAsRead: (messageId: string) => Promise<void>;
   markAllAsRead: () => Promise<void>;
@@ -127,237 +125,19 @@ export const useChatData = (
   }, []);
 
   /**
-   * Initialize chat password and encryption key
-   */
-  useEffect(() => {
-    const initializeChat = async () => {
-      if (!chatId || !userId) {
-        setLoading(false);
-        return;
-      }
-
-      try {
-        setError(null);
-        setLoading(true);
-
-        // Check if password exists
-        const password = getChatPassword(chatId);
-
-        if (!password) {
-          setIsPasswordRequired(true);
-          setIsUnlocked(false);
-          setEncryptionKey(null);
-          setLoading(false);
-          setMessages([]);
-          return;
-        }
-
-        // Derive encryption key
-        const key = deriveChatKey(password, chatId);
-        setEncryptionKey(key);
-        setIsUnlocked(true);
-        setIsPasswordRequired(false);
-
-        // Try to load from cache first
-        const cachedMessages = loadFromCache(chatId);
-        const cachedOffset = loadOffsetFromCache(chatId);
-
-        console.log("Initializing chat:", {
-          chatId,
-          hasPassword: !!password,
-          hasCache: !!cachedMessages,
-          cacheSize: cachedMessages?.length || 0,
-          hasKey: !!key,
-        });
-
-        if (cachedMessages && cachedMessages.length > 0) {
-          console.log("Loading messages from cache:", cachedMessages.length);
-          setMessages(cachedMessages);
-          setOffset(cachedOffset);
-          setHasMore(cachedOffset > 0);
-          setLoading(false);
-
-          // Refresh in background (use setTimeout to avoid dependency issues)
-          setTimeout(() => {
-            fetchMessages(true).catch((err) => {
-              console.error("Background refresh failed:", err);
-            });
-          }, 100);
-        } else {
-          // No cache, fetch fresh
-          console.log("No cache found, fetching fresh messages");
-          await fetchMessages(true);
-        }
-      } catch (err) {
-        console.error("Error initializing chat:", err);
-        setError("Failed to initialize chat");
-        setIsPasswordRequired(true);
-        setIsUnlocked(false);
-        setLoading(false);
-        setMessages([]);
-      }
-    };
-
-    initializeChat();
-  }, [chatId, userId]); // Remove function dependencies to prevent re-runs
-
-  /**
-   * Unlock chat with password
-   */
-  const unlockChat = useCallback(async (): Promise<boolean> => {
-    try {
-      console.log("UNLOCK: Starting password unlock process");
-      setLoading(true);
-      setError(null);
-
-      // Get or prompt for password
-      const password = await getOrPromptPassword(chatId);
-      console.log("UNLOCK: Password received");
-
-      // Derive encryption key
-      const key = deriveChatKey(password, chatId);
-      console.log("UNLOCK: Encryption key derived");
-
-      // Test key by trying to decrypt a message (if any exist)
-      try {
-        // If there are messages, try to decrypt one to verify the key
-        const { data: testMessage } = await supabase
-          .from("messages")
-          .select("content")
-          .eq("chat_id", chatId)
-          .limit(1)
-          .single();
-
-        if (testMessage?.content) {
-          const parsed = JSON.parse(testMessage.content);
-          if (parsed.ciphertext && parsed.iv) {
-            // Try to decrypt to verify key is correct
-            decryptMessage(parsed.ciphertext, parsed.iv, key);
-          }
-        }
-      } catch (decryptError) {
-        // Wrong password - gibberish will be shown
-        toast({
-          title: "Wrong Password",
-          description:
-            "Messages may appear garbled. Please check the password with your chat partner.",
-          variant: "destructive",
-        });
-      }
-
-      // CRITICAL: Set state and fetch in the same callback chain
-      setEncryptionKey(key);
-      setIsUnlocked(true);
-      setIsPasswordRequired(false);
-
-      console.log("UNLOCK: State updated, fetching messages...");
-      // Load messages with the newly set key - fetch directly to avoid circular dependency
-      try {
-        const { data, error: fetchError } = await supabase
-          .from("messages")
-          .select(
-            `
-            *,
-            reactions (
-              id,
-              emoji,
-              user_id
-            )
-          `,
-          )
-          .eq("chat_id", chatId)
-          .order("created_at", { ascending: false })
-          .range(0, MESSAGE_PAGE_SIZE - 1);
-
-        if (fetchError) throw fetchError;
-
-        if (data) {
-          // Decrypt messages
-          const decryptedMessages = await Promise.all(
-            data.map(async (msg) => {
-              let decryptedContent = msg.content;
-              let isDecrypted = false;
-
-              try {
-                if (msg.content && msg.content.startsWith("{")) {
-                  const parsed = JSON.parse(msg.content);
-                  if (parsed.ciphertext && parsed.iv) {
-                    decryptedContent = decryptMessage(
-                      parsed.ciphertext,
-                      parsed.iv,
-                      key,
-                    );
-                    isDecrypted = true;
-                  } else {
-                    decryptedContent = msg.content;
-                  }
-                } else {
-                  decryptedContent = msg.content;
-                }
-              } catch (err) {
-                console.error("Error decrypting message:", err);
-                try {
-                  const parsed = JSON.parse(msg.content);
-                  if (parsed.ciphertext) {
-                    const preview = parsed.ciphertext.substring(0, 32) + "...";
-                    decryptedContent = preview;
-                  } else {
-                    decryptedContent = msg.content;
-                  }
-                } catch {
-                  decryptedContent = msg.content;
-                }
-                isDecrypted = false;
-              }
-
-              return {
-                ...msg,
-                content: decryptedContent,
-                decrypted: isDecrypted,
-              };
-            }),
-          );
-
-          const sortedMessages = decryptedMessages.reverse();
-
-          setMessages((prev) => {
-            const updated = sortedMessages;
-            saveToCache(chatId, updated);
-            return updated;
-          });
-
-          setOffset(MESSAGE_PAGE_SIZE);
-          saveOffsetToCache(chatId, MESSAGE_PAGE_SIZE);
-          setHasMore(data.length === MESSAGE_PAGE_SIZE);
-        }
-      } catch (fetchErr) {
-        console.error("UNLOCK: Error fetching messages:", fetchErr);
-        setError("Failed to fetch messages");
-      }
-
-      console.log("UNLOCK: Messages fetched successfully");
-      setLoading(false);
-
-      toast({
-        title: "Chat Unlocked",
-        description: "Messages decrypted successfully.",
-      });
-
-      return true;
-    } catch (err) {
-      console.error("Error unlocking chat:", err);
-      setError(err instanceof Error ? err.message : "Failed to unlock chat");
-      setLoading(false);
-      return false;
-    }
-  }, [chatId, toast, saveToCache, saveOffsetToCache]);
-
-  /**
    * Fetch messages from database and decrypt
+   * DEFINED BEFORE useEffect/initializeChat to resolve dependency issues
    */
   const fetchMessages = useCallback(
-    async (reset: boolean = false) => {
-      if (!chatId || !isUnlocked || !encryptionKey) return;
+    async (reset: boolean = false, keyOverride?: string) => {
+      // Use the override key if provided, otherwise fall back to state
+      const activeKey = keyOverride || encryptionKey;
+
+      if (!chatId || !isUnlocked || !activeKey) {
+        // If we are resetting (initial load) and missing requirements, we must stop loading
+        if (reset) setLoading(false);
+        return;
+      }
 
       try {
         setLoading(true);
@@ -384,7 +164,7 @@ export const useChatData = (
         if (data) {
           // Decrypt messages
           const decryptedMessages = await Promise.all(
-            data.map(async (msg) => {
+            data.map(async (msg): Promise<Message> => {
               let decryptedContent = msg.content;
               let isDecrypted = false;
 
@@ -398,7 +178,7 @@ export const useChatData = (
                     decryptedContent = decryptMessage(
                       parsed.ciphertext,
                       parsed.iv,
-                      encryptionKey,
+                      activeKey,
                     );
                     isDecrypted = true;
                   } else {
@@ -411,19 +191,15 @@ export const useChatData = (
                 }
               } catch (err) {
                 console.error("Error decrypting message:", err);
-                // Show a preview of the ciphertext instead of full JSON
                 try {
                   const parsed = JSON.parse(msg.content);
                   if (parsed.ciphertext) {
-                    // Show first 32 characters of ciphertext as preview
                     const preview = parsed.ciphertext.substring(0, 32) + "...";
                     decryptedContent = preview;
                   } else {
-                    // Fallback to showing the content as-is
                     decryptedContent = msg.content;
                   }
                 } catch {
-                  // If parsing fails, show the content as-is
                   decryptedContent = msg.content;
                 }
                 isDecrypted = false;
@@ -433,7 +209,7 @@ export const useChatData = (
                 ...msg,
                 content: decryptedContent,
                 decrypted: isDecrypted,
-              };
+              } as Message;
             }),
           );
 
@@ -473,17 +249,136 @@ export const useChatData = (
   );
 
   /**
+   * Initialize chat password and encryption key
+   */
+  useEffect(() => {
+    const initializeChat = async () => {
+      if (!chatId || !userId) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        setError(null);
+        setLoading(true);
+
+        // Check if password exists
+        const password = getChatPassword(chatId);
+
+        if (!password) {
+          setIsPasswordRequired(true);
+          setIsUnlocked(false);
+          setEncryptionKey(null);
+          setLoading(false);
+          setMessages([]);
+          return;
+        }
+
+        // Derive encryption key
+        const key = deriveChatKey(password, chatId);
+        setEncryptionKey(key);
+        setIsUnlocked(true);
+        setIsPasswordRequired(false);
+
+        // Try to load from cache first
+        const cachedMessages = loadFromCache(chatId);
+        const cachedOffset = loadOffsetFromCache(chatId);
+
+        if (cachedMessages && cachedMessages.length > 0) {
+          setMessages(cachedMessages);
+          setOffset(cachedOffset);
+          setHasMore(cachedOffset > 0);
+          setLoading(false);
+
+          // Refresh in background
+          setTimeout(() => {
+            fetchMessages(true, key).catch((err) => {
+              console.error("Background refresh failed:", err);
+            });
+          }, 100);
+        } else {
+          // No cache, fetch fresh
+          // Pass key explicitly to avoid stale state
+          await fetchMessages(true, key);
+        }
+      } catch (err) {
+        console.error("Error initializing chat:", err);
+        setError("Failed to initialize chat");
+        setIsPasswordRequired(true);
+        setIsUnlocked(false);
+        setLoading(false);
+        setMessages([]);
+      }
+    };
+
+    initializeChat();
+  }, [chatId, userId]);
+
+  /**
+   * Unlock chat with password
+   */
+  const unlockChat = useCallback(async (): Promise<boolean> => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      // Get or prompt for password
+      const password = await getOrPromptPassword(chatId);
+
+      // Derive encryption key
+      const key = deriveChatKey(password, chatId);
+
+      // Test key by trying to decrypt a message (if any exist)
+      try {
+        const { data: testMessage } = await supabase
+          .from("messages")
+          .select("content")
+          .eq("chat_id", chatId)
+          .limit(1)
+          .single();
+
+        if (testMessage?.content) {
+          const parsed = JSON.parse(testMessage.content);
+          if (parsed.ciphertext && parsed.iv) {
+            decryptMessage(parsed.ciphertext, parsed.iv, key);
+          }
+        }
+      } catch (decryptError) {
+        toast({
+          title: "Wrong Password",
+          description:
+            "Messages may appear garbled. Please check the password with your chat partner.",
+          variant: "destructive",
+        });
+      }
+
+      setEncryptionKey(key);
+      setIsUnlocked(true);
+      setIsPasswordRequired(false);
+
+      // Pass key explicitly to avoid stale state
+      await fetchMessages(true, key);
+
+      toast({
+        title: "Chat Unlocked",
+        description: "Messages decrypted successfully.",
+      });
+
+      return true;
+    } catch (err) {
+      console.error("Error unlocking chat:", err);
+      setError(err instanceof Error ? err.message : "Failed to unlock chat");
+      setLoading(false);
+      return false;
+    }
+  }, [chatId, toast, fetchMessages]);
+
+  /**
    * Send encrypted message
    */
   const sendMessage = useCallback(
     async (content: string, options?: MessageOptions): Promise<boolean> => {
       if (!chatId || !userId || !isUnlocked || !encryptionKey) {
-        console.error("SEND: Cannot send - missing required state", {
-          hasChatId: !!chatId,
-          hasUserId: !!userId,
-          isUnlocked,
-          hasEncryptionKey: !!encryptionKey,
-        });
         toast({
           title: "Error",
           description: "Cannot send message - chat not unlocked",
@@ -495,7 +390,6 @@ export const useChatData = (
       // Sanitize input
       const sanitizedContent = content.trim();
       if (!sanitizedContent) {
-        console.log("SEND: Empty message, skipping");
         return false;
       }
 
@@ -510,7 +404,6 @@ export const useChatData = (
         decrypted: true,
       };
 
-      console.log("SEND: Adding optimistic message:", tempId);
       setMessages((prev) => {
         const updated = [...prev, optimisticMessage];
         saveToCache(chatId, updated);
@@ -519,7 +412,6 @@ export const useChatData = (
 
       // FALLBACK: Remove temp message after 3 seconds if not replaced
       const tempTimeout = setTimeout(() => {
-        console.log("SEND: Temp message timeout, removing:", tempId);
         setMessages((prev) => {
           const updated = prev.filter((msg) => msg.id !== tempId);
           saveToCache(chatId, updated);
@@ -529,7 +421,6 @@ export const useChatData = (
 
       try {
         // Encrypt message
-        console.log("SEND: Encrypting message...");
         const { ciphertext, iv } = encryptMessage(
           sanitizedContent,
           encryptionKey,
@@ -551,8 +442,6 @@ export const useChatData = (
           ...(options?.replyToId && { reply_to_id: options.replyToId }),
         };
 
-        console.log("SEND: Inserting to Supabase:", messageData);
-
         // Send to Supabase
         const { data: insertedData, error: insertError } = await supabase
           .from("messages")
@@ -561,7 +450,6 @@ export const useChatData = (
           .single();
 
         if (insertError) {
-          console.error("SEND: Insert error:", insertError);
           clearTimeout(tempTimeout);
           // Remove optimistic update on error
           setMessages((prev) => {
@@ -572,18 +460,15 @@ export const useChatData = (
           throw insertError;
         }
 
-        console.log("SEND: Message inserted successfully:", insertedData?.id);
-
         // Clear the timeout since we successfully sent
         clearTimeout(tempTimeout);
 
         // FALLBACK: Refetch messages after 2 seconds to ensure we have the latest
         setTimeout(async () => {
-          console.log("SEND: Fallback refetch...");
           try {
             await fetchMessages(true);
           } catch (err) {
-            console.error("SEND: Fallback refetch failed:", err);
+
           }
         }, 2000);
 
@@ -667,22 +552,18 @@ export const useChatData = (
 
   /**
    * Mark all unread messages as read - BULLETPROOF VERSION
-   * This is relationship-critical - must be 100% reliable
    */
   const markAllAsRead = useCallback(async () => {
     if (!userId || !chatId) {
-      console.warn("markAllAsRead: Missing userId or chatId");
       return;
     }
 
     const readAt = new Date().toISOString();
 
     // Step 1: IMMEDIATE UI UPDATE (optimistic)
-    // This makes the UI feel instant even if network is slow
     setMessages((prev) => {
       const updated = prev.map((msg) => {
         if (msg.sender_id !== userId && !msg.read_at) {
-          console.log("Marking message as read (UI):", msg.id);
           return { ...msg, read_at: readAt };
         }
         return msg;
@@ -696,68 +577,22 @@ export const useChatData = (
     // Step 2: BULLETPROOF DATABASE UPDATE with retry
     const updateReadReceipts = async (attempt = 1) => {
       try {
-        console.log(
-          `BULLETPROOF: Marking all messages as read (attempt ${attempt})`,
-        );
-
-        // Use a more reliable query with proper filtering
-        const { data, error } = await supabase
+        const { error } = await supabase
           .from("messages")
           .update({ read_at: readAt })
           .eq("chat_id", chatId)
           .neq("sender_id", userId)
           .is("read_at", null)
-          .select("id"); // Return updated IDs for verification
+          .select("id");
 
         if (error) {
-          console.error("BULLETPROOF: Database update failed:", error);
           throw error;
         }
 
-        console.log(
-          "BULLETPROOF: Successfully updated messages in database:",
-          data?.length || 0,
-        );
-
-        // Step 3: VERIFICATION
-        // Double-check that messages are actually marked as read
-        // NOTE: This is for logging only, no auto-retry to prevent infinite loop
-        setTimeout(async () => {
-          try {
-            const { data: verifyData } = await supabase
-              .from("messages")
-              .select("id, read_at")
-              .eq("chat_id", chatId)
-              .neq("sender_id", userId)
-              .is("read_at", null);
-
-            if (verifyData && verifyData.length > 0) {
-              console.warn(
-                "BULLETPROOF: Some messages still unmarked after update (will be synced by real-time)...",
-                verifyData.length,
-              );
-            } else {
-              console.log(
-                "BULLETPROOF: All messages successfully marked as read! ✨",
-              );
-            }
-          } catch (verifyErr) {
-            console.error("BULLETPROOF: Verification failed:", verifyErr);
-          }
-        }, 1000);
       } catch (err) {
-        console.error(`BULLETPROOF: Attempt ${attempt} failed:`, err);
-
-        // Retry logic - relationship-critical, so retry up to 3 times
+        // Retry logic - relationship-critical
         if (attempt < 3) {
-          console.log(`BULLETPROOF: Retrying in ${attempt * 500}ms...`);
           setTimeout(() => updateReadReceipts(attempt + 1), attempt * 500);
-        } else {
-          console.error(
-            "BULLETPROOF: All attempts failed, read receipts may be out of sync",
-          );
-          // Even if DB update failed, keep UI optimistic (user thinks it's read)
-          // The real-time subscription will eventually sync the correct state
         }
       }
     };
@@ -770,18 +605,11 @@ export const useChatData = (
    * Load more messages
    */
   const loadMoreMessages = useCallback(async () => {
-    console.log("Load more clicked:", {
-      hasMore,
-      loading,
-      currentOffset: offset,
-    });
     if (!hasMore || loading) {
-      console.log("Cannot load more:", { hasMore, loading });
       return;
     }
-    console.log("Loading more messages at offset:", offset);
     await fetchMessages(false);
-  }, [hasMore, loading, fetchMessages, offset]);
+  }, [hasMore, loading, fetchMessages]);
 
   /**
    * Refresh messages
@@ -803,200 +631,57 @@ export const useChatData = (
           .eq("message_id", messageId)
           .eq("user_id", userId)
           .eq("emoji", emoji)
-          .single();
+          .maybeSingle();
 
         if (existing) {
           // Remove reaction
-          const { error } = await supabase
-            .from("reactions")
-            .delete()
-            .eq("id", existing.id);
+          await supabase.from("reactions").delete().eq("id", existing.id);
 
-          if (error) throw error;
+          setMessages(prev => prev.map(msg => {
+            if (msg.id === messageId && msg.reactions) {
+              return {
+                ...msg,
+                reactions: msg.reactions.filter(r => r.id !== existing.id)
+              };
+            }
+            return msg;
+          }));
         } else {
           // Add reaction
-          const { error } = await supabase.from("reactions").insert({
-            message_id: messageId,
-            user_id: userId,
-            emoji: emoji,
-          });
+          const { data, error } = await supabase
+            .from("reactions")
+            .insert({
+              message_id: messageId,
+              user_id: userId,
+              emoji,
+            })
+            .select()
+            .single();
 
           if (error) throw error;
-        }
 
-        // Refresh messages to show updated reactions
-        await fetchMessages(true);
-      } catch (err) {
-        console.error("Error sending reaction:", err);
-        toast({
-          title: "Error",
-          description: "Failed to send reaction",
-          variant: "destructive",
-        });
-      }
-    },
-    [userId, toast, fetchMessages],
-  );
-
-  // Set up real-time subscription for new messages
-  useEffect(() => {
-    if (!chatId || !isUnlocked) return;
-
-    console.log("REALTIME: Setting up subscription for chat:", chatId);
-
-    const channel = supabase
-      .channel(`messages-${chatId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "messages",
-          filter: `chat_id=eq.${chatId}`,
-        },
-        (payload) => {
-          console.log("REALTIME: New message received:", payload);
-          const newMessage = payload.new;
-
-          // Decrypt the new message
-          try {
-            let decryptedContent = newMessage.content;
-            let isDecrypted = false;
-
-            if (newMessage.content && newMessage.content.startsWith("{")) {
-              const parsed = JSON.parse(newMessage.content);
-              if (parsed.ciphertext && parsed.iv) {
-                decryptedContent = decryptMessage(
-                  parsed.ciphertext,
-                  parsed.iv,
-                  encryptionKey!,
-                );
-                isDecrypted = true;
-              }
-            }
-
-            // Check if this is a replacement for an optimistic update
-            setMessages((prev) => {
-              console.log("REALTIME: Current messages:", prev.length);
-              console.log(
-                "REALTIME: New message sender:",
-                newMessage.sender_id,
-              );
-              console.log("REALTIME: New message content:", decryptedContent);
-
-              // Find the most recent temp message from the same sender
-              const tempIndex = prev.findIndex(
-                (msg) =>
-                  msg.id.startsWith("temp-") &&
-                  msg.sender_id === newMessage.sender_id,
-              );
-
-              if (tempIndex !== -1) {
-                console.log(
-                  "REALTIME: Replacing temp message at index:",
-                  tempIndex,
-                );
-                // Replace temp message with real one
-                const updated = [...prev];
-                updated[tempIndex] = {
-                  ...newMessage,
-                  content: decryptedContent,
-                  decrypted: isDecrypted,
+          if (data) {
+            setMessages(prev => prev.map(msg => {
+              if (msg.id === messageId) {
+                return {
+                  ...msg,
+                  reactions: [...(msg.reactions || []), {
+                    id: data.id,
+                    emoji: data.emoji,
+                    user_id: data.user_id
+                  }]
                 };
-                // Save to cache
-                saveToCache(chatId, updated);
-                return updated;
-              } else {
-                console.log("REALTIME: Adding new message");
-                // Add as new message
-                const updated = [
-                  ...prev,
-                  {
-                    ...newMessage,
-                    content: decryptedContent,
-                    decrypted: isDecrypted,
-                  },
-                ];
-                // Save to cache
-                saveToCache(chatId, updated);
-                return updated;
-              }
-            });
-          } catch (err) {
-            console.error("REALTIME: Error decrypting new message:", err);
-            // Show a preview of the ciphertext for new messages
-            let previewContent = newMessage.content;
-            try {
-              const parsed = JSON.parse(newMessage.content);
-              if (parsed.ciphertext) {
-                previewContent = parsed.ciphertext.substring(0, 32) + "...";
-              }
-            } catch {
-              // If parsing fails, show the content as-is
-              previewContent = newMessage.content;
-            }
-
-            setMessages((prev) => {
-              const updated = [
-                ...prev,
-                {
-                  ...newMessage,
-                  content: previewContent,
-                  decrypted: false,
-                },
-              ];
-              saveToCache(chatId, updated);
-              return updated;
-            });
-          }
-        },
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "messages",
-          filter: `chat_id=eq.${chatId}`,
-        },
-        (payload) => {
-          console.log("BULLETPROOF: Real-time read receipt update:", payload);
-          const updatedMessage = payload.new;
-
-          setMessages((prev) => {
-            const updated = prev.map((msg) => {
-              if (msg.id === updatedMessage.id) {
-                console.log(
-                  "BULLETPROOF: Syncing read receipt for message:",
-                  msg.id,
-                  {
-                    oldReadAt: msg.read_at,
-                    newReadAt: updatedMessage.read_at,
-                  },
-                );
-                return { ...msg, read_at: updatedMessage.read_at };
               }
               return msg;
-            });
-            // CRITICAL: Sync to cache immediately for persistence
-            saveToCache(chatId, updated);
-            return updated;
-          });
-        },
-      )
-      .subscribe((status) => {
-        console.log("REALTIME: Subscription status:", status);
-        if (status === "SUBSCRIBED") {
-          console.log("REALTIME: Successfully subscribed to chat:", chatId);
-        } else if (status === "CHANNEL_ERROR") {
-          console.error("REALTIME: Subscription error for chat:", chatId);
+            }));
+          }
         }
-      });
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [chatId, isUnlocked, encryptionKey, saveToCache]);
+      } catch (err) {
+        console.error("Error sending reaction:", err);
+      }
+    },
+    [userId],
+  );
 
   return {
     messages,

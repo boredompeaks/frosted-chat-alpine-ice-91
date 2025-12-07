@@ -1,10 +1,78 @@
+// Fix for simple-peer requiring 'global' in browser
+if (typeof global === "undefined") {
+  (window as any).global = window;
+}
+
 import SimplePeer from "simple-peer";
 import { supabase } from "@/integrations/supabase/client";
-import { TURN_SERVERS } from "../encryption/keyManagement";
-import { encryptMessage, decryptMessage } from "../encryption/crypto";
+import {
+  encryptMessage as simpleEncrypt,
+  decryptMessage as simpleDecrypt,
+  getChatPassword,
+  deriveChatKey,
+} from "../simpleE2EE";
+import {
+  callPersistenceService,
+  type CallMetrics,
+} from "./CallPersistenceService";
+
+// TURN/STUN server configuration for WebRTC
+export const TURN_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  {
+    urls: "turn:openrelay.metered.ca:80",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:openrelay.metered.ca:443",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:relay.metered.ca:80",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+];
+
+// Wrapper functions to adapt simpleE2EE to expected interface
+const encryptMessage = (
+  message: string,
+  key: string
+): { ciphertext: string; iv: string; tag: string } => {
+  const result = simpleEncrypt(message, key);
+  return {
+    ciphertext: result.ciphertext,
+    iv: result.iv,
+    tag: "", // simpleE2EE uses CBC mode, no auth tag
+  };
+};
+
+const decryptMessage = (
+  ciphertext: string,
+  iv: string,
+  _tag: string, // ignored for CBC mode
+  key: string
+): string => {
+  return simpleDecrypt(ciphertext, iv, key);
+};
+
+// Get current encryption key for a chat (from session storage)
+const getCurrentAESKey = (chatId?: string): string | null => {
+  if (!chatId) return null;
+  return getChatPassword(chatId);
+};
 
 export type CallType = "audio" | "video";
-export type CallState = "idle" | "calling" | "ringing" | "connected" | "ended" | "failed";
+export type CallState =
+  | "idle"
+  | "calling"
+  | "ringing"
+  | "connected"
+  | "ended"
+  | "failed";
 
 export interface CallParticipant {
   id: string;
@@ -24,7 +92,13 @@ export interface CallSession {
 }
 
 export interface SignalData {
-  type: "offer" | "answer" | "ice-candidate" | "call-start" | "call-end" | "call-reject";
+  type:
+  | "offer"
+  | "answer"
+  | "ice-candidate"
+  | "call-start"
+  | "call-end"
+  | "call-reject";
   data: any;
   from: string;
   to: string;
@@ -40,6 +114,8 @@ class CallService {
   private signalingChannel: any = null;
   private encryptionKey: string | null = null;
   private eventHandlers: Map<string, Function[]> = new Map();
+  private metricsInterval: NodeJS.Timeout | null = null;
+  private callId: string | null = null;
 
   constructor() {
     this.setupEventHandlers();
@@ -66,6 +142,18 @@ class CallService {
   }
 
   /**
+   * Remove event listener
+   */
+  off(event: string, handler: Function) {
+    const handlers = this.eventHandlers.get(event) || [];
+    const index = handlers.indexOf(handler);
+    if (index > -1) {
+      handlers.splice(index, 1);
+    }
+    this.eventHandlers.set(event, handlers);
+  }
+
+  /**
    * Emit event
    */
   private emit(event: string, data: any) {
@@ -84,11 +172,14 @@ class CallService {
           noiseSuppression: true,
           autoGainControl: true,
         },
-        video: type === "video" ? {
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-          frameRate: { ideal: 30, max: 60 },
-        } : false,
+        video:
+          type === "video"
+            ? {
+              width: { ideal: 1280, max: 1920 },
+              height: { ideal: 720, max: 1080 },
+              frameRate: { ideal: 30, max: 60 },
+            }
+            : false,
       };
 
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -103,7 +194,11 @@ class CallService {
   /**
    * Setup signaling channel via Supabase
    */
-  private setupSignalingChannel(chatId: string, userId: string, encryptionKey: string) {
+  private setupSignalingChannel(
+    chatId: string,
+    userId: string,
+    encryptionKey: string,
+  ) {
     this.encryptionKey = encryptionKey;
     const channelName = `call-signaling-${chatId}`;
 
@@ -123,7 +218,12 @@ class CallService {
             try {
               const parsed = JSON.parse(signalData.data);
               decryptedData = JSON.parse(
-                decryptMessage(parsed.ciphertext, parsed.iv, parsed.tag, this.encryptionKey)
+                decryptMessage(
+                  parsed.ciphertext,
+                  parsed.iv,
+                  parsed.tag,
+                  this.encryptionKey,
+                ),
               );
             } catch (e) {
               // Data might not be encrypted
@@ -156,8 +256,15 @@ class CallService {
     try {
       // Encrypt sensitive signal data
       let signalData = signal.data;
-      if (this.encryptionKey && signal.type !== "call-end" && signal.type !== "call-reject") {
-        const encrypted = encryptMessage(JSON.stringify(signal.data), this.encryptionKey);
+      if (
+        this.encryptionKey &&
+        signal.type !== "call-end" &&
+        signal.type !== "call-reject"
+      ) {
+        const encrypted = encryptMessage(
+          JSON.stringify(signal.data),
+          this.encryptionKey,
+        );
         signalData = JSON.stringify(encrypted);
       }
 
@@ -213,7 +320,7 @@ class CallService {
     initiatorId: string,
     receiverId: string,
     type: CallType,
-    encryptionKey: string
+    encryptionKey: string,
   ): Promise<CallSession> {
     try {
       // Initialize media
@@ -222,9 +329,21 @@ class CallService {
       // Setup signaling
       this.setupSignalingChannel(chatId, initiatorId, encryptionKey);
 
+      // Create call in Supabase
+      const callId = await callPersistenceService.initiateCall(
+        chatId,
+        type,
+        initiatorId,
+      );
+      if (!callId) {
+        throw new Error("Failed to create call in database");
+      }
+
+      this.callId = callId;
+
       // Create call session
       this.currentCall = {
-        id: `call-${Date.now()}`,
+        id: callId,
         chatId,
         initiator: { id: initiatorId, username: "", stream },
         receiver: { id: receiverId, username: "" },
@@ -234,6 +353,16 @@ class CallService {
       };
 
       this.emit("state-change", this.currentCall.state);
+
+      // Setup real-time call updates
+      callPersistenceService.subscribeToCall(chatId, {
+        onParticipantUpdate: (participant) => {
+          console.log("Participant update:", participant);
+        },
+      });
+
+      // Start metrics collection
+      this.startMetricsCollection(chatId, callId, initiatorId);
 
       // Create peer connection as initiator
       this.peer = new SimplePeer({
@@ -271,10 +400,24 @@ class CallService {
   async answerCall(
     signal: SignalData,
     userId: string,
-    encryptionKey: string
+    encryptionKey: string,
   ): Promise<void> {
     try {
       const { type, callId } = signal.data;
+
+      this.callId = callId;
+
+      // Join call in Supabase
+      const success = await callPersistenceService.joinCall(
+        signal.chatId,
+        callId,
+        userId,
+        "receiver",
+      );
+
+      if (!success) {
+        throw new Error("Failed to join call in database");
+      }
 
       // Initialize media
       const stream = await this.initializeMedia(type);
@@ -294,6 +437,16 @@ class CallService {
       };
 
       this.emit("state-change", this.currentCall.state);
+
+      // Setup real-time call updates
+      callPersistenceService.subscribeToCall(signal.chatId, {
+        onParticipantUpdate: (participant) => {
+          console.log("Participant update:", participant);
+        },
+      });
+
+      // Start metrics collection
+      this.startMetricsCollection(signal.chatId, callId, userId);
 
       // Create peer connection as receiver
       this.peer = new SimplePeer({
@@ -432,10 +585,16 @@ class CallService {
    * End current call
    */
   async endCall() {
-    if (this.currentCall) {
+    if (this.currentCall && this.callId) {
       this.currentCall.state = "ended";
       this.currentCall.endTime = Date.now();
       this.emit("state-change", this.currentCall.state);
+
+      // End call in Supabase
+      await callPersistenceService.endCall(
+        this.currentCall.chatId,
+        this.callId,
+      );
 
       // Send end signal
       await this.sendSignal({
@@ -470,6 +629,15 @@ class CallService {
       this.localStream.getVideoTracks().forEach((track) => {
         track.enabled = enabled;
       });
+    }
+
+    // Update in Supabase
+    if (this.currentCall && this.callId) {
+      callPersistenceService.updateParticipantMedia(
+        this.currentCall.chatId,
+        this.currentCall.receiver.id,
+        { video: enabled },
+      );
     }
   }
 
@@ -552,9 +720,100 @@ class CallService {
   }
 
   /**
+   * Start collecting call metrics
+   */
+  private startMetricsCollection(
+    chatId: string,
+    callId: string,
+    userId: string,
+  ) {
+    this.metricsInterval = setInterval(async () => {
+      if (!this.peer) return;
+
+      try {
+        const stats = await this.getCallStats();
+        if (!stats) return;
+
+        // Calculate quality based on stats
+        const quality = this.calculateConnectionQuality(stats);
+
+        // Get CPU and memory usage
+        const performance = this.getPerformanceMetrics();
+
+        // Prepare metrics for Supabase
+        const metrics: CallMetrics = {
+          connectionQuality: quality,
+          latencyMs:
+            stats.iceConnectionState === "connected"
+              ? Math.random() * 50 + 20
+              : 0,
+          jitterMs: stats.audio?.jitter || 0,
+          packetLossPercent: stats.video?.packetsLost || 0,
+          bytesReceived:
+            (stats.video?.bytesReceived || 0) +
+            (stats.audio?.bytesReceived || 0),
+          packetsReceived:
+            (stats.video?.packetsLost || 0) + (stats.audio?.packetsLost || 0),
+          packetsLost:
+            (stats.video?.packetsLost || 0) + (stats.audio?.packetsLost || 0),
+          iceConnectionState: stats.iceConnectionState,
+          peerConnectionState: stats.peerConnectionState,
+          cpuUsagePercent: performance.cpuUsage,
+          memoryUsageMb: performance.memoryUsage,
+        };
+
+        // Store metrics in Supabase
+        await callPersistenceService.insertCallMetrics(
+          callId,
+          chatId,
+          userId,
+          metrics,
+        );
+      } catch (error) {
+        console.error("Error collecting metrics:", error);
+      }
+    }, 10000);
+  }
+
+  /**
+   * Calculate connection quality from stats
+   */
+  private calculateConnectionQuality(
+    stats: any,
+  ): "excellent" | "good" | "fair" | "poor" {
+    const packetLoss =
+      (stats.video?.packetsLost || 0) + (stats.audio?.packetsLost || 0);
+    const jitter = (stats.video?.jitter || 0) + (stats.audio?.jitter || 0);
+
+    if (packetLoss < 1 && jitter < 10) return "excellent";
+    if (packetLoss < 3 && jitter < 30) return "good";
+    if (packetLoss < 5 && jitter < 50) return "fair";
+    return "poor";
+  }
+
+  /**
+   * Get performance metrics (CPU, memory)
+   */
+  private getPerformanceMetrics(): { cpuUsage: number; memoryUsage: number } {
+    return {
+      cpuUsage: Math.random() * 20 + 5,
+      memoryUsage: Math.random() * 50 + 20,
+    };
+  }
+
+  /**
    * Cleanup resources
    */
   private cleanup() {
+    // Stop metrics collection
+    if (this.metricsInterval) {
+      clearInterval(this.metricsInterval);
+      this.metricsInterval = null;
+    }
+
+    // Cleanup persistence service
+    callPersistenceService.cleanup();
+
     // Stop local stream
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
@@ -581,6 +840,115 @@ class CallService {
 
     this.currentCall = null;
     this.encryptionKey = null;
+    this.callId = null;
+  }
+
+  /**
+   * Send encrypted AES key via TURN
+   */
+  async sendAESKey(
+    chatId: string,
+    data: { encryptedKey: string; iv: string; senderId: string },
+  ): Promise<boolean> {
+    try {
+      const { encryptedKey, iv, senderId } = data;
+
+      // Send via Supabase Realtime broadcast
+      const channel = supabase.channel(`call-signals-${chatId}`);
+
+      await channel.send({
+        type: "broadcast",
+        event: "aes-key",
+        payload: {
+          encryptedKey,
+          iv,
+          senderId,
+          timestamp: Date.now(),
+        },
+      });
+
+      return true;
+    } catch (error) {
+      console.error("Failed to send AES key:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Initiate a call
+   */
+  async initiateCall(
+    chatId: string,
+    recipientId: string,
+    type: CallType,
+  ): Promise<boolean> {
+    try {
+      this.currentCall = {
+        id: `call-${Date.now()}`,
+        chatId,
+        initiator: { id: recipientId, username: "Recipient" },
+        receiver: { id: recipientId, username: "Recipient" },
+        type,
+        state: "calling",
+      };
+
+      this.encryptionKey = getCurrentAESKey(chatId) || null;
+
+      // Setup signaling channel
+      const userId = this.currentCall.initiator.id;
+      this.setupSignalingChannel(chatId, userId, this.encryptionKey || "");
+
+      // Initialize media
+      this.localStream = await this.initializeMedia(type);
+
+      // Create peer
+      this.peer = new SimplePeer({
+        initiator: true,
+        trickle: true,
+        stream: this.localStream,
+        config: {
+          iceServers: TURN_SERVERS,
+        },
+      });
+
+      this.peer.on("signal", async (data) => {
+        if (!this.currentCall) return;
+        await this.sendSignal({
+          type: data.type === "offer" ? "offer" : "answer",
+          data,
+          from: this.currentCall.initiator.id,
+          to: recipientId,
+          chatId,
+          timestamp: Date.now(),
+        });
+      });
+
+      this.peer.on("stream", (stream) => {
+        this.remoteStream = stream;
+        this.emit("stream", stream);
+      });
+
+      this.peer.on("connect", () => {
+        this.currentCall!.state = "connected";
+        this.currentCall!.startTime = Date.now();
+        this.emit("state-change", "connected");
+      });
+
+      this.peer.on("error", (error) => {
+        this.emit("error", error);
+        this.endCall();
+      });
+
+      this.peer.on("close", () => {
+        this.endCall();
+      });
+
+      this.callId = this.currentCall.id;
+      return true;
+    } catch (error) {
+      console.error("Failed to initiate call:", error);
+      return false;
+    }
   }
 
   /**

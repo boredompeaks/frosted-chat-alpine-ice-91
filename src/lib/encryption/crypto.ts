@@ -1,10 +1,12 @@
 import CryptoJS from "crypto-js";
 
 // Default hardcoded session key for bootstrapping (first-time messages)
-const DEFAULT_SESSION_KEY = "CalcIta_Default_Bootstrap_Key_2024_Secure_Messaging_AES256";
+const DEFAULT_SESSION_KEY = CryptoJS.enc.Base64.stringify(
+  CryptoJS.SHA256("CalcIta_Default_Bootstrap_Key_2024_Secure_Messaging_AES256"),
+);
 
 // Key rotation interval (24 hours in milliseconds)
-export const KEY_ROTATION_INTERVAL = 24 * 60 * 60 * 1000;
+export const KEY_ROTATION_INTERVAL = 48 * 60 * 60 * 1000;
 
 /**
  * Generate a random AES-256 key
@@ -30,16 +32,16 @@ export const generateRSAKeyPair = async (): Promise<{
         hash: "SHA-256",
       },
       true,
-      ["encrypt", "decrypt"]
+      ["encrypt", "decrypt"],
     );
 
     const publicKey = await window.crypto.subtle.exportKey(
       "spki",
-      keyPair.publicKey
+      keyPair.publicKey,
     );
     const privateKey = await window.crypto.subtle.exportKey(
       "pkcs8",
-      keyPair.privateKey
+      keyPair.privateKey,
     );
 
     return {
@@ -57,7 +59,7 @@ export const generateRSAKeyPair = async (): Promise<{
  */
 export const encryptKeyWithRSA = async (
   aesKey: string,
-  publicKeyPEM: string
+  publicKeyPEM: string,
 ): Promise<string> => {
   try {
     const publicKey = await importRSAPublicKey(publicKeyPEM);
@@ -68,7 +70,7 @@ export const encryptKeyWithRSA = async (
         name: "RSA-OAEP",
       },
       publicKey,
-      keyData
+      keyData,
     );
 
     return arrayBufferToBase64(encrypted);
@@ -83,7 +85,7 @@ export const encryptKeyWithRSA = async (
  */
 export const decryptKeyWithRSA = async (
   encryptedKey: string,
-  privateKeyPEM: string
+  privateKeyPEM: string,
 ): Promise<string> => {
   try {
     const privateKey = await importRSAPrivateKey(privateKeyPEM);
@@ -94,7 +96,7 @@ export const decryptKeyWithRSA = async (
         name: "RSA-OAEP",
       },
       privateKey,
-      encryptedData
+      encryptedData,
     );
 
     return arrayBufferToBase64(decrypted);
@@ -109,7 +111,7 @@ export const decryptKeyWithRSA = async (
  */
 export const encryptMessage = (
   message: string,
-  key?: string
+  key?: string,
 ): { ciphertext: string; iv: string; tag: string } => {
   try {
     const encryptionKey = key || DEFAULT_SESSION_KEY;
@@ -117,8 +119,8 @@ export const encryptMessage = (
     // Generate random IV
     const iv = CryptoJS.lib.WordArray.random(12); // 96 bits for GCM
 
-    // Derive key from string
-    const derivedKey = CryptoJS.SHA256(encryptionKey);
+    // The key is expected to be in the correct format already.
+    const derivedKey = CryptoJS.enc.Base64.parse(encryptionKey);
 
     // Encrypt with AES-GCM
     const encrypted = CryptoJS.AES.encrypt(message, derivedKey, {
@@ -145,13 +147,13 @@ export const decryptMessage = (
   ciphertext: string,
   iv: string,
   tag: string,
-  key?: string
+  key?: string,
 ): string => {
   try {
     const decryptionKey = key || DEFAULT_SESSION_KEY;
 
-    // Derive key from string
-    const derivedKey = CryptoJS.SHA256(decryptionKey);
+    // The key is expected to be in the correct format already.
+    const derivedKey = CryptoJS.enc.Base64.parse(decryptionKey);
 
     // Parse IV and tag
     const ivWordArray = CryptoJS.enc.Base64.parse(iv);
@@ -170,7 +172,7 @@ export const decryptMessage = (
         iv: ivWordArray,
         mode: CryptoJS.mode.GCM,
         padding: CryptoJS.pad.NoPadding,
-      }
+      },
     );
 
     const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
@@ -192,7 +194,7 @@ export const decryptMessage = (
 export const encryptMessageWithMetadata = (
   message: string,
   senderId: string,
-  key?: string
+  key?: string,
 ): string => {
   const metadata = {
     content: message,
@@ -209,7 +211,7 @@ export const encryptMessageWithMetadata = (
  */
 export const decryptMessageWithMetadata = (
   encryptedData: string,
-  key?: string
+  key?: string,
 ): { content: string; senderId: string; timestamp: number } => {
   try {
     const parsed = JSON.parse(encryptedData);
@@ -217,7 +219,7 @@ export const decryptMessageWithMetadata = (
       parsed.ciphertext,
       parsed.iv,
       parsed.tag,
-      key
+      key,
     );
     return JSON.parse(decrypted);
   } catch (error) {
@@ -288,13 +290,62 @@ export const hashData = (data: string): string => {
  */
 export const deriveKeyFromPassword = (
   password: string,
-  salt: string = "CalcIta_Salt_2024"
+  salt: string = "CalcIta_Salt_2024",
 ): string => {
-  const key = CryptoJS.PBKDF2(password, salt, {
-    keySize: 256 / 32,
-    iterations: 10000,
-  });
-  return key.toString(CryptoJS.enc.Base64);
+  console.log("\n=== deriveKeyFromPassword CALLED ===");
+  console.log("Stack trace:", new Error().stack);
+  console.log("Password parameter:", JSON.stringify(password));
+  console.log("Salt parameter:", JSON.stringify(salt));
+  console.log("CryptoJS available:", !!CryptoJS);
+  console.log("CryptoJS.PBKDF2 available:", !!CryptoJS.PBKDF2);
+
+  if (!password) {
+    console.error("❌ Password is empty!");
+    throw new Error("Password is required");
+  }
+
+  try {
+    console.log("About to call CryptoJS.PBKDF2 with:");
+    console.log("  password:", JSON.stringify(password));
+    console.log("  salt:", JSON.stringify(salt));
+    console.log("  keySize: 256/32 = 8");
+    console.log("  iterations: 10000");
+
+    const key = CryptoJS.PBKDF2(password, salt, {
+      keySize: 256 / 32,
+      iterations: 10000,
+    });
+
+    console.log("PBKDF2 call completed");
+    console.log("PBKDF2 result object:", key);
+    console.log("PBKDF2 result type:", typeof key);
+    console.log("PBKDF2 result constructor:", key?.constructor?.name);
+    console.log("PBKDF2 result has words:", key?.words?.length);
+    console.log("PBKDF2 result words (first 10):", key?.words?.slice(0, 10));
+
+    console.log("About to call .toString(CryptoJS.enc.Base64)...");
+    const result = key.toString(CryptoJS.enc.Base64);
+
+    console.log("toString call completed");
+    console.log("Base64 result type:", typeof result);
+    console.log("Base64 result length:", result?.length);
+    console.log("Base64 result value:", result);
+    console.log(
+      "Base64 result preview (first 100 chars):",
+      result?.substring(0, 100),
+    );
+
+    return result;
+  } catch (error) {
+    console.error("❌ Error in PBKDF2:", error);
+    console.error(
+      "Error stack:",
+      error instanceof Error ? error.stack : undefined,
+    );
+    throw error;
+  } finally {
+    console.log("=== deriveKeyFromPassword COMPLETE ===\n");
+  }
 };
 
 // Helper functions for Web Crypto API
@@ -326,7 +377,7 @@ const importRSAPublicKey = async (pemKey: string): Promise<CryptoKey> => {
       hash: "SHA-256",
     },
     true,
-    ["encrypt"]
+    ["encrypt"],
   );
 };
 
@@ -340,8 +391,125 @@ const importRSAPrivateKey = async (pemKey: string): Promise<CryptoKey> => {
       hash: "SHA-256",
     },
     true,
-    ["decrypt"]
+    ["decrypt"],
   );
+};
+
+/**
+ * Encrypt data using a raw key (no derivation) for master key operations.
+ * Used for encrypting the private key.
+ */
+export const encryptWithRawKey = (
+  data: string,
+  key: string,
+): { ciphertext: string; iv: string; tag: string } => {
+  try {
+    // Validate inputs
+    if (!data) {
+      throw new Error("Data to encrypt is required");
+    }
+    if (!key) {
+      throw new Error("Encryption key is required");
+    }
+
+    console.log("encryptWithRawKey - Data length:", data.length);
+    console.log("encryptWithRawKey - Key length:", key.length);
+    console.log(
+      "encryptWithRawKey - Key preview:",
+      key.substring(0, 20) + "...",
+    );
+
+    // The key is expected to be Base64 encoded, parse it directly.
+    const derivedKey = CryptoJS.enc.Base64.parse(key);
+
+    if (!derivedKey) {
+      throw new Error("Failed to parse encryption key");
+    }
+
+    console.log("encryptWithRawKey - Parsed key successfully");
+
+    const iv = CryptoJS.lib.WordArray.random(12);
+
+    if (!iv) {
+      throw new Error("Failed to generate IV");
+    }
+
+    console.log("encryptWithRawKey - Generated IV, starting encryption...");
+
+    const encrypted = CryptoJS.AES.encrypt(data, derivedKey, {
+      iv: iv,
+      mode: CryptoJS.mode.GCM,
+      padding: CryptoJS.pad.NoPadding,
+    });
+
+    if (!encrypted) {
+      throw new Error("Encryption returned null/undefined");
+    }
+
+    console.log("encryptWithRawKey - Encryption successful");
+
+    return {
+      ciphertext: encrypted.ciphertext.toString(CryptoJS.enc.Base64),
+      iv: iv.toString(CryptoJS.enc.Base64),
+      tag: encrypted.tag.toString(CryptoJS.enc.Base64),
+    };
+  } catch (error) {
+    console.error("❌ Error encrypting with raw key:", error);
+    console.error("❌ Error details:", {
+      message: error instanceof Error ? error.message : "Unknown error",
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    throw new Error(
+      `Failed to encrypt with raw key: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
+  }
+};
+
+/**
+ * Decrypt data using a raw key (no derivation) for master key operations.
+ * Used for decrypting the private key.
+ */
+export const decryptWithRawKey = (
+  ciphertext: string,
+  iv: string,
+  tag: string,
+  key: string,
+): string => {
+  try {
+    // The key is expected to be Base64 encoded, parse it directly.
+    const derivedKey = CryptoJS.enc.Base64.parse(key);
+
+    // Create the encrypted object that CryptoJS expects
+    const encryptedObject = CryptoJS.lib.CipherParams.create({
+      ciphertext: CryptoJS.enc.Base64.parse(ciphertext),
+      iv: CryptoJS.enc.Base64.parse(iv),
+      tag: CryptoJS.enc.Base64.parse(tag),
+      salt: CryptoJS.lib.WordArray.create(),
+    });
+
+    // Decrypt with AES-GCM
+    const decrypted = CryptoJS.AES.decrypt(encryptedObject, derivedKey, {
+      iv: CryptoJS.enc.Base64.parse(iv),
+      mode: CryptoJS.mode.GCM,
+      padding: CryptoJS.pad.NoPadding,
+    });
+
+    const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
+
+    if (!decryptedText) {
+      console.error("Decryption failed: empty result");
+      throw new Error(
+        "Decryption failed - empty result. Password may be incorrect.",
+      );
+    }
+
+    return decryptedText;
+  } catch (error) {
+    console.error("Decrypt error:", error);
+    throw new Error(
+      "Failed to decrypt private key. Please check your password.",
+    );
+  }
 };
 
 /**
@@ -350,12 +518,12 @@ const importRSAPrivateKey = async (pemKey: string): Promise<CryptoKey> => {
 export const storeKeySecurely = (
   keyId: string,
   key: string,
-  masterKey?: string
+  masterKey?: string,
 ): void => {
   try {
     const storageKey = `calcita_key_${keyId}`;
     if (masterKey) {
-      const encrypted = encryptMessage(key, masterKey);
+      const encrypted = encryptWithRawKey(key, masterKey);
       localStorage.setItem(storageKey, JSON.stringify(encrypted));
     } else {
       localStorage.setItem(storageKey, key);
@@ -370,7 +538,7 @@ export const storeKeySecurely = (
  */
 export const retrieveKeyFromStorage = (
   keyId: string,
-  masterKey?: string
+  masterKey?: string,
 ): string | null => {
   try {
     const storageKey = `calcita_key_${keyId}`;
@@ -380,11 +548,11 @@ export const retrieveKeyFromStorage = (
 
     if (masterKey) {
       const encrypted = JSON.parse(stored);
-      return decryptMessage(
+      return decryptWithRawKey(
         encrypted.ciphertext,
         encrypted.iv,
         encrypted.tag,
-        masterKey
+        masterKey,
       );
     }
 
@@ -420,6 +588,8 @@ export default {
   decryptMessage,
   encryptMessageWithMetadata,
   decryptMessageWithMetadata,
+  encryptWithRawKey,
+  decryptWithRawKey,
   sanitizeInput,
   escapeHTML,
   validateEncryptedMessage,

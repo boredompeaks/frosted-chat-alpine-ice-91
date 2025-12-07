@@ -1,0 +1,356 @@
+/**
+ * Simple Password-Based E2EE
+ *
+ * Architecture:
+ * - Per-chat unique password
+ * - Derive AES-256 key from password + chatId using PBKDF2
+ * - Session-only storage (cleared on browser close)
+ * - No key exchange, no rotation, no complexity
+ */
+
+import CryptoJS from "crypto-js";
+
+// Configuration
+const PBKDF2_ITERATIONS = 150000;
+const KEY_LENGTH = 256;
+const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+
+// Storage keys
+const SESSION_PASSWORD_KEY = 'chat_session_passwords';
+
+// Session tracking
+let lastActivity: number = Date.now();
+
+/**
+ * Derive AES-256 key from password and chatId
+ *
+ * Same password + same chatId = same key (always)
+ * Different chatId = different key (isolated per chat)
+ */
+export const deriveChatKey = (password: string, chatId: string): string => {
+  if (!password || !chatId) {
+    throw new Error('Password and chatId are required');
+  }
+
+  const salt = CryptoJS.SHA256(chatId).toString();
+  const key = CryptoJS.PBKDF2(password, salt, {
+    keySize: KEY_LENGTH / 32,
+    iterations: PBKDF2_ITERATIONS,
+    hasher: CryptoJS.algo.SHA256
+  });
+
+  return key.toString(CryptoJS.enc.Base64);
+};
+
+/**
+ * Encrypt message with derived key
+ */
+export const encryptMessage = (message: string, key: string): { ciphertext: string; iv: string } => {
+  if (!message || !key) {
+    throw new Error('Message and key are required for encryption');
+  }
+
+  // Generate random IV
+  const iv = CryptoJS.lib.WordArray.random(16);
+
+  // Encrypt with AES-256-CBC
+  const encrypted = CryptoJS.AES.encrypt(message, key, {
+    iv: iv,
+    mode: CryptoJS.mode.CBC,
+    padding: CryptoJS.pad.Pkcs7
+  });
+
+  return {
+    ciphertext: encrypted.toString(),
+    iv: iv.toString(CryptoJS.enc.Base64)
+  };
+};
+
+/**
+ * Decrypt message with derived key
+ */
+export const decryptMessage = (ciphertext: string, iv: string, key: string): string => {
+  if (!ciphertext || !iv || !key) {
+    throw new Error('Ciphertext, IV, and key are required for decryption');
+  }
+
+  try {
+    const decrypted = CryptoJS.AES.decrypt(ciphertext, key, {
+      iv: CryptoJS.enc.Base64.parse(iv),
+      mode: CryptoJS.mode.CBC,
+      padding: CryptoJS.pad.Pkcs7
+    });
+
+    const plaintext = decrypted.toString(CryptoJS.enc.Utf8);
+
+    if (!plaintext) {
+      throw new Error('Decryption failed - invalid password or corrupted data');
+    }
+
+    return plaintext;
+  } catch (error) {
+    throw new Error(`Decryption failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+};
+
+/**
+ * Session password management (per chat)
+ */
+interface ChatPasswords {
+  [chatId: string]: string;
+}
+
+/**
+ * Get password for specific chat
+ */
+export const getChatPassword = (chatId: string): string | null => {
+  if (!chatId) return null;
+
+  try {
+    const stored = sessionStorage.getItem(SESSION_PASSWORD_KEY);
+    if (!stored) return null;
+
+    const passwords: ChatPasswords = JSON.parse(stored);
+    return passwords[chatId] || null;
+  } catch (error) {
+    console.error('Error retrieving chat password:', error);
+    return null;
+  }
+};
+
+/**
+ * Store password for specific chat
+ */
+export const setChatPassword = (chatId: string, password: string): void => {
+  if (!chatId || !password) {
+    throw new Error('ChatId and password are required');
+  }
+
+  try {
+    const stored = sessionStorage.getItem(SESSION_PASSWORD_KEY);
+    const passwords: ChatPasswords = stored ? JSON.parse(stored) : {};
+
+    passwords[chatId] = password;
+    sessionStorage.setItem(SESSION_PASSWORD_KEY, JSON.stringify(passwords));
+
+    updateActivity();
+  } catch (error) {
+    console.error('Error storing chat password:', error);
+    throw new Error('Failed to store password');
+  }
+};
+
+/**
+ * Remove password for specific chat
+ */
+export const clearChatPassword = (chatId: string): void {
+  if (!chatId) return;
+
+  try {
+    const stored = sessionStorage.getItem(SESSION_PASSWORD_KEY);
+    if (!stored) return;
+
+    const passwords: ChatPasswords = JSON.parse(stored);
+    delete passwords[chatId];
+    sessionStorage.setItem(SESSION_PASSWORD_KEY, JSON.stringify(passwords));
+  } catch (error) {
+    console.error('Error clearing chat password:', error);
+  }
+};
+
+/**
+ * Clear all chat passwords
+ */
+export const clearAllChatPasswords = (): void => {
+  try {
+    sessionStorage.removeItem(SESSION_PASSWORD_KEY);
+  } catch (error) {
+    console.error('Error clearing all chat passwords:', error);
+  }
+};
+
+/**
+ * Check if password exists for chat
+ */
+export const hasChatPassword = (chatId: string): boolean => {
+  return getChatPassword(chatId) !== null;
+};
+
+/**
+ * Get or prompt for password
+ */
+export const getOrPromptPassword = async (chatId: string): Promise<string> => {
+  const existing = getChatPassword(chatId);
+  if (existing) {
+    return existing;
+  }
+
+  // Prompt user for password
+  return new Promise((resolve, reject) => {
+    const password = window.prompt(
+      'Enter chat password:\n\nShare this password securely with your chat partner via a separate channel (Signal, phone, etc.)',
+      ''
+    );
+
+    if (!password) {
+      reject(new Error('Password required to access chat'));
+      return;
+    }
+
+    if (password.length < 8) {
+      reject(new Error('Password must be at least 8 characters'));
+      return;
+    }
+
+    setChatPassword(chatId, password);
+    resolve(password);
+  });
+};
+
+/**
+ * Session activity tracking
+ */
+const updateActivity = (): void => {
+  lastActivity = Date.now();
+};
+
+/**
+ * Check if session is expired
+ */
+export const isSessionExpired = (): boolean => {
+  return (Date.now() - lastActivity) > SESSION_TIMEOUT;
+};
+
+/**
+ * Manually expire session
+ */
+export const expireSession = (): void => {
+  lastActivity = Date.now() - SESSION_TIMEOUT - 1000;
+};
+
+/**
+ * Validate password strength
+ */
+export const validatePassword = (password: string): { valid: boolean; error?: string } => {
+  if (!password) {
+    return { valid: false, error: 'Password is required' };
+  }
+
+  if (password.length < 8) {
+    return { valid: false, error: 'Password must be at least 8 characters' };
+  }
+
+  if (password.length < 12) {
+    return {
+      valid: true,
+      warning: 'Consider using a longer password for better security'
+    };
+  }
+
+  return { valid: true };
+};
+
+/**
+ * Generate secure random password
+ */
+export const generateSecurePassword = (length: number = 16): string => {
+  const randomBytes = CryptoJS.lib.WordArray.random(length);
+  const base64 = randomBytes.toString(CryptoJS.enc.Base64);
+  // Remove special characters and convert to a readable format
+  return base64.replace(/[^a-zA-Z0-9]/g, '').substring(0, length);
+};
+
+/**
+ * Hash data for verification
+ */
+export const hashData = (data: string): string => {
+  return CryptoJS.SHA256(data).toString(CryptoJS.enc.Hex);
+};
+
+/**
+ * Create encrypted message with metadata
+ */
+export const createEncryptedMessage = (
+  content: string,
+  senderId: string,
+  key: string
+): { encryptedContent: string } => {
+  const metadata = {
+    content,
+    senderId,
+    timestamp: Date.now()
+  };
+
+  const { ciphertext, iv } = encryptMessage(JSON.stringify(metadata), key);
+
+  return {
+    encryptedContent: JSON.stringify({ ciphertext, iv })
+  };
+};
+
+/**
+ * Decrypt message and extract metadata
+ */
+export const decryptMessageWithMetadata = (
+  encryptedData: string,
+  key: string
+): { content: string; senderId: string; timestamp: number } => {
+  try {
+    const parsed = JSON.parse(encryptedData);
+    const decrypted = decryptMessage(parsed.ciphertext, parsed.iv, key);
+    return JSON.parse(decrypted);
+  } catch (error) {
+    throw new Error('Failed to decrypt message or invalid message format');
+  }
+};
+
+/**
+ * Setup activity monitoring for session timeout
+ */
+export const setupSessionMonitoring = (): void => {
+  const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+
+  const resetTimer = () => {
+    updateActivity();
+  };
+
+  events.forEach(event => {
+    document.addEventListener(event, resetTimer, { passive: true });
+  });
+
+  // Check timeout every 30 seconds
+  const interval = setInterval(() => {
+    if (isSessionExpired()) {
+      clearAllChatPasswords();
+      console.log('Chat session expired - passwords cleared');
+    }
+  }, 30000);
+
+  // Cleanup function
+  return () => {
+    events.forEach(event => {
+      document.removeEventListener(event, resetTimer);
+    });
+    clearInterval(interval);
+  };
+};
+
+export default {
+  deriveChatKey,
+  encryptMessage,
+  decryptMessage,
+  getChatPassword,
+  setChatPassword,
+  clearChatPassword,
+  clearAllChatPasswords,
+  hasChatPassword,
+  getOrPromptPassword,
+  isSessionExpired,
+  expireSession,
+  validatePassword,
+  generateSecurePassword,
+  hashData,
+  createEncryptedMessage,
+  decryptMessageWithMetadata,
+  setupSessionMonitoring
+};

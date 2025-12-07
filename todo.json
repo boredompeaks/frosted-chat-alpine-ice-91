@@ -1,0 +1,74 @@
+{
+  "phases": [
+    {
+      "name": "Phase 1: Project Cleanup and Setup",
+      "status": "done",
+      "tasks": [
+        { "description": "Create a new directory `supabase/sql` for all SQL files.", "status": "done" },
+        { "description": "Review all `.sql` files in the root directory.", "status": "done" },
+        { "description": "Move `schema.sql` to `supabase/sql/schema.sql`.", "status": "done" },
+        { "description": "Delete redundant SQL files from the root directory after review.", "status": "done" }
+      ]
+    },
+    {
+      "name": "Phase 2: Message Reactions & Replies",
+      "status": "done",
+      "tasks": [
+        { "description": "Update `useChatData.ts` to fetch reactions and replied-to message content.", "status": "done" },
+        { "description": "Implement `sendReaction` function in `useChatData.ts`.", "status": "done" },
+        { "description": "Integrate Reactions UI in `Message.tsx` and `Conversation.tsx`.", "status": "done" },
+        { "description": "Integrate Replies UI in `Message.tsx` and `Conversation.tsx`.", "status": "done" }
+      ]
+    },
+    {
+        "name": "Phase 3: Message Search",
+        "status": "done",
+        "tasks": [
+          { "description": "Implement client-side search functionality for E2EE messages.", "status": "done" },
+          { "description": "Add a search bar to the chat interface.", "status": "done" },
+          { "description": "Display search results.", "status": "done" }
+        ]
+    },
+    {
+      "name": "Phase 4: File Sharing & Uploads",
+      "status": "done",
+      "tasks": [
+        { "description": "Modify `MessageInput.tsx` to pass the actual `mediaUrl` to `onSendMessage`.", "status": "done" },
+        { "description": "Modify `useChatData.ts`'s `sendMessage` to accept and store `mediaUrl`.", "status": "done" },
+        { "description": "Modify `Message.tsx` to display the uploaded media.", "status": "done" }
+      ]
+    },
+    {
+      "name": "Phase 5: User Settings",
+      "status": "done",
+      "tasks": [
+        { "description": "Implement 'Clear All Chats' functionality in `Settings.tsx`.", "status": "done" },
+        { "description": "Review and ensure all other settings are functional (local state/localStorage).", "status": "done" }
+      ]
+    },
+    {
+      "name": "Phase 6: Encryption Key Rotation",
+      "status": "pending",
+      "tasks": [
+        { "description": "Implement automatic key rotation logic in `useKeyRotation.ts`.", "status": "pending" },
+        { "description": "Handle secure distribution of new keys to chat participants.", "status": "pending" }
+      ]
+    },
+    {
+      "name": "Phase 7: Improved Error Handling",
+      "status": "pending",
+      "tasks": [
+        { "description": "Replace `console.error` with user-facing toast notifications where appropriate.", "status": "pending" },
+        { "description": "Implement React Error Boundaries for critical components.", "status": "pending" }
+      ]
+    },
+    {
+      "name": "Phase 8: Client-Side Private Key Management",
+      "status": "pending",
+      "tasks": [
+        { "description": "Review current private key storage in `AuthContext.tsx`.", "status": "pending" },
+        { "description": "Propose and implement a more secure storage solution (e.g., IndexedDB with non-exportable keys).", "status": "pending" }
+      ]
+    }
+  ]
+}

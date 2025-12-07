@@ -1,0 +1,460 @@
+/**
+ * ====================================================================================
+ * DISABLED: Complex Key Management System
+ * ====================================================================================
+ *
+ * This file has been COMMENTED OUT as part of the Simple E2EE migration.
+ *
+ * The new architecture uses password-based E2EE (see simpleE2EE.ts).
+ * This file is kept for reference and can be re-enabled later if needed.
+ *
+ * To re-enable:
+ * 1. Remove this comment block
+ * 2. Uncomment the imports and code below
+ * 3. Update Conversation.tsx and other components to use keyManagement again
+ *
+ * ====================================================================================
+ */
+
+// import { supabase } from "@/integrations/supabase/client";
+// import {
+//   generateAESKey,
+//   encryptKeyWithRSA,
+//   decryptKeyWithRSA,
+//   storeKeySecurely,
+//   retrieveKeyFromStorage,
+//   KEY_ROTATION_INTERVAL,
+// } from "./crypto";
+
+/*
+// TURN server configuration (India-optimized with redundancy)
+export const TURN_SERVERS = [
+  {
+    urls: "stun:stun.l.google.com:19302",
+  },
+  {
+    urls: "stun:stun1.l.google.com:19302",
+  },
+  {
+    urls: "turn:openrelay.metered.ca:80",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:openrelay.metered.ca:443",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:relay.metered.ca:80",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+];
+*/
+
+export type KeyStatus = "pending" | "active" | "expired";
+
+/**
+ * Get current active key for a chat from local storage
+ */
+export const getActiveChatKey = (chatId: string): string | null => {
+  return retrieveKeyFromStorage(chatId);
+};
+
+/**
+ * Get or create encryption key for a chat
+ * This is the main entry point for key management
+ */
+export const getOrCreateChatKey = async (
+  chatId: string,
+  userId: string,
+  isInitiator: boolean,
+): Promise<string | null> => {
+  // First, try to get existing active key
+  const existingKey = getActiveChatKey(chatId);
+
+  if (existingKey) {
+    return existingKey;
+  }
+
+  // No existing key, so we need to manage the encryption lifecycle
+  await manageChatEncryption(chatId, userId, isInitiator, null);
+
+  // After managing, try to get the key again
+  const newKey = getActiveChatKey(chatId);
+
+  if (newKey) {
+    return newKey;
+  }
+
+  console.warn(`No encryption key found for chat ${chatId} after management`);
+  return null;
+};
+
+/**
+ * Main function to manage the encryption lifecycle for a chat
+ */
+export const manageChatEncryption = async (
+  chatId: string,
+  userId: string,
+  isInitiator: boolean,
+  privateKey: string | null,
+) => {
+  const existingKey = getActiveChatKey(chatId);
+
+  if (existingKey) {
+    const needsRotation = await checkKeyRotation(chatId);
+    if (needsRotation && isInitiator) {
+      console.log(`Key rotation needed for chat ${chatId}. Initiating...`);
+      // Key rotation logic will be implemented in the next step
+    }
+    return;
+  }
+
+  // No active key, so we need to perform the initial key exchange
+  if (isInitiator) {
+    // Initiator waits for the key from the recipient
+    await receiveKey(chatId, userId, privateKey);
+  } else {
+    // Recipient initiates the key exchange
+    await initiateKeyExchange(chatId, userId);
+  }
+};
+
+/**
+ * Initiated by the recipient of the first message.
+ * Generates a new key, stores it in the DB, and sends the ID to the initiator.
+ */
+export const initiateKeyExchange = async (
+  chatId: string,
+  recipientId: string,
+) => {
+  try {
+    // 1. Get the initiator's ID from the chat
+    const { data: chatData, error: chatError } = await supabase
+      .from("chats")
+      .select("created_by")
+      .eq("id", chatId)
+      .single();
+
+    if (chatError || !chatData) {
+      throw new Error("Could not fetch chat initiator.");
+    }
+    const initiatorId = chatData.created_by;
+
+    // 2. Get initiator's public key
+    const { data: profileData, error: profileError } = await supabase
+      .from("profiles")
+      .select("public_key")
+      .eq("id", initiatorId)
+      .single();
+
+    if (profileError || !profileData || !profileData.public_key) {
+      throw new Error("Could not fetch initiator's public key.");
+    }
+    const initiatorPublicKey = profileData.public_key;
+
+    // 3. Generate new AES key
+    const newAesKey = generateAESKey();
+
+    // 4. Encrypt AES key with initiator's public key
+    const encryptedKey = await encryptKeyWithRSA(newAesKey, initiatorPublicKey);
+
+    // 5. Insert new key into the database
+    const { data: keyRecord, error: insertError } = await supabase
+      .from("encryption_keys")
+      .insert({
+        chat_id: chatId,
+        key_value: encryptedKey,
+        initiator_id: initiatorId,
+        receiver_acknowledged: true,
+        status: "pending",
+      })
+      .select()
+      .single();
+
+    if (insertError || !keyRecord) {
+      throw new Error("Could not store new encryption key.");
+    }
+
+    // 6. Send the ID of the key record to the initiator via TURN
+    const success = await sendKeyRecordIdViaTURN(
+      chatId,
+      initiatorId,
+      keyRecord.id,
+    );
+
+    if (!success) {
+      console.warn(
+        "TURN key transfer failed. The initiator will fetch the key from the database on next load.",
+      );
+    }
+
+    // 7. Store the new key locally for the recipient
+    storeKeySecurely(chatId, newAesKey);
+  } catch (error) {
+    console.error("Error initiating key exchange:", error);
+  }
+};
+
+/**
+ * Sends the ID of the encryption key record to the recipient via TURN.
+ */
+const sendKeyRecordIdViaTURN = async (
+  chatId: string,
+  recipientId: string,
+  keyRecordId: string,
+): Promise<boolean> => {
+  try {
+    const turnPromises = TURN_SERVERS.slice(1).map(
+      (server) =>
+        new Promise<boolean>((resolve) => {
+          const channel = supabase.channel(
+            `key-exchange-${chatId}-${server.urls}`,
+          );
+          channel.subscribe(async (status) => {
+            if (status === "SUBSCRIBED") {
+              await channel.send({
+                type: "broadcast",
+                event: "key-transfer",
+                payload: { recipientId, keyRecordId },
+              });
+              // Short timeout for each server
+              setTimeout(() => {
+                channel.unsubscribe();
+                resolve(true); // Resolve even if no ack, it's a broadcast
+              }, 3000);
+            }
+          });
+        }),
+    );
+
+    await Promise.any(turnPromises);
+    return true;
+  } catch (error) {
+    console.error("All TURN servers failed to send key record ID:", error);
+    return false;
+  }
+};
+
+/**
+ * Listens for a key exchange event from the initiator.
+ */
+export const receiveKey = async (
+  chatId: string,
+  userId: string,
+  privateKey: string | null,
+) => {
+  if (!privateKey) return;
+  try {
+    // Listen on all TURN server channels
+    TURN_SERVERS.slice(1).forEach((server) => {
+      const channel = supabase.channel(`key-exchange-${chatId}-${server.urls}`);
+      channel
+        .on("broadcast", { event: "key-transfer" }, async (payload) => {
+          const { recipientId, keyRecordId } = payload.payload;
+          if (recipientId === userId) {
+            await processReceivedKeyRecord(keyRecordId, privateKey);
+            channel.unsubscribe();
+          }
+        })
+        .subscribe();
+    });
+
+    // Also check DB as a fallback
+    setTimeout(async () => {
+      const { data, error } = await supabase
+        .from("encryption_keys")
+        .select("id")
+        .eq("chat_id", chatId)
+        .eq("initiator_id", userId)
+        .eq("sender_acknowledged", false)
+        .eq("status", "pending")
+        .single();
+
+      if (data) {
+        await processReceivedKeyRecord(data.id, privateKey);
+      }
+    }, 5000); // 5 second delay for fallback
+  } catch (error) {
+    console.error("Error setting up key receiver:", error);
+  }
+};
+
+/**
+ * Processes a received key record ID.
+ */
+const processReceivedKeyRecord = async (
+  keyRecordId: string,
+  privateKey: string,
+) => {
+  try {
+    // 1. Fetch the key record
+    const { data: keyRecord, error: fetchError } = await supabase
+      .from("encryption_keys")
+      .select("*")
+      .eq("id", keyRecordId)
+      .single();
+
+    if (fetchError || !keyRecord) {
+      throw new Error("Could not fetch key record.");
+    }
+
+    const decryptedKey = await decryptKeyWithRSA(
+      keyRecord.key_value,
+      privateKey,
+    );
+
+    // 3. Store the key locally
+    storeKeySecurely(keyRecord.chat_id, decryptedKey);
+
+    // 4. Acknowledge receipt in the database
+    const { error: updateError } = await supabase
+      .from("encryption_keys")
+      .update({ sender_acknowledged: true })
+      .eq("id", keyRecordId);
+
+    if (updateError) {
+      throw new Error("Failed to acknowledge key receipt.");
+    }
+
+    console.log("Key exchange completed successfully.");
+  } catch (error) {
+    console.error("Error processing received key record:", error);
+  }
+};
+
+/**
+ * Check if key needs rotation (48 hour interval)
+ */
+export const checkKeyRotation = async (chatId: string): Promise<boolean> => {
+  try {
+    const { data, error } = await supabase
+      .from("encryption_keys")
+      .select("last_rotation")
+      .eq("chat_id", chatId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error || !data) {
+      // If no active key, rotation is not "needed", but a new exchange is.
+      return false;
+    }
+
+    const lastRotation = new Date(data.last_rotation).getTime();
+    const now = Date.now();
+
+    return now - lastRotation > KEY_ROTATION_INTERVAL;
+  } catch (error) {
+    console.error("Error checking key rotation:", error);
+    return false;
+  }
+};
+
+/**
+ * Get current chat key (wrapper for getActiveChatKey)
+ */
+export const getChatKey = async (chatId: string): Promise<string | null> => {
+  return getActiveChatKey(chatId);
+};
+
+/**
+ * Update key status in database
+ */
+export const updateKeyStatus = async (
+  keyId: string,
+  status: KeyStatus,
+): Promise<boolean> => {
+  try {
+    const { error } = await supabase
+      .from("encryption_keys")
+      .update({
+        status: status,
+        last_rotation: new Date().toISOString(),
+      })
+      .eq("id", keyId);
+
+    if (error) {
+      console.error("Error updating key status:", error);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Error updating key status:", error);
+    return false;
+  }
+};
+
+/**
+ * Rotate encryption key for a chat
+ */
+export const rotateKey = async (
+  chatId: string,
+  userId: string,
+  recipientId: string,
+  recipientPublicKey: string,
+): Promise<string | null> => {
+  try {
+    // 1. Generate new AES key
+    const newAesKey = generateAESKey();
+
+    // 2. Get current user info
+    const { data: currentUser } = await supabase
+      .from("profiles")
+      .select("public_key, private_key_encrypted")
+      .eq("id", userId)
+      .single();
+
+    if (!currentUser || !currentUser.public_key) {
+      throw new Error("Could not fetch current user public key");
+    }
+
+    // 3. Encrypt new key with recipient's public key
+    const encryptedNewKey = await encryptKeyWithRSA(
+      newAesKey,
+      recipientPublicKey,
+    );
+
+    // 4. Store new key in database
+    const { data: keyRecord, error: insertError } = await supabase
+      .from("encryption_keys")
+      .insert({
+        chat_id: chatId,
+        key_value: encryptedNewKey,
+        initiator_id: userId,
+        receiver_acknowledged: true,
+        status: "active",
+      })
+      .select()
+      .single();
+
+    if (insertError || !keyRecord) {
+      throw new Error("Failed to store rotated key");
+    }
+
+    // 5. Update old key status to expired
+    const { error: updateError } = await supabase
+      .from("encryption_keys")
+      .update({ status: "expired" })
+      .eq("chat_id", chatId)
+      .eq("status", "active")
+      .neq("id", keyRecord.id);
+
+    if (updateError) {
+      console.warn("Failed to update old key status:", updateError);
+    }
+
+    // 6. Store new key locally
+    storeKeySecurely(chatId, newAesKey);
+
+    console.log("Key rotation completed successfully");
+    return newAesKey;
+  } catch (error) {
+    console.error("Error rotating key:", error);
+    return null;
+  }
+};

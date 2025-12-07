@@ -119,12 +119,12 @@
   }
   
   .message-sent {
-    @apply message-bubble glass-dark ml-auto;
-  }
-  
-  .message-received {
-    @apply message-bubble glass mr-auto;
-  }
+  @apply relative max-w-[85%] p-3 rounded-2xl rounded-tr-sm bg-ice-accent/20 text-white border border-ice-accent/20 backdrop-blur-md shadow-sm ml-auto;
+}
+
+.message-received {
+  @apply relative max-w-[85%] p-3 rounded-2xl rounded-tl-sm bg-white/10 text-white border border-white/10 backdrop-blur-md shadow-sm mr-auto;
+}
   
   .typing-indicator {
     @apply flex gap-1 items-center p-2;

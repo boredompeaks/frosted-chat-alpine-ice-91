@@ -40,7 +40,9 @@ export const usePresence = ({
   updateInterval = DEFAULT_UPDATE_INTERVAL,
   awayTimeout = DEFAULT_AWAY_TIMEOUT,
 }: UsePresenceOptions): UsePresenceReturn => {
-  const [presence, setPresence] = useState<Map<string, UserPresence>>(new Map());
+  const [presence, setPresence] = useState<Map<string, UserPresence>>(
+    new Map(),
+  );
   const [myStatus, setMyStatus] = useState<PresenceStatus>("online");
   const presenceChannelRef = useRef<RealtimeChannel | null>(null);
   const typingTimeoutRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
@@ -69,7 +71,7 @@ export const usePresence = ({
         console.error("Error in updatePresenceInDB:", error);
       }
     },
-    [userId]
+    [userId],
   );
 
   /**
@@ -90,7 +92,7 @@ export const usePresence = ({
         });
       }
     },
-    [userId, updatePresenceInDB]
+    [userId, updatePresenceInDB],
   );
 
   /**
@@ -209,7 +211,7 @@ export const usePresence = ({
 
       typingTimeoutRef.current.set(targetChatId, timeout);
     },
-    [userId, myStatus]
+    [userId, myStatus],
   );
 
   /**
@@ -219,6 +221,14 @@ export const usePresence = ({
     (targetChatId: string) => {
       if (!presenceChannelRef.current) return;
 
+      // Clear any existing timeout first
+      const existingTimeout = typingTimeoutRef.current.get(targetChatId);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+        typingTimeoutRef.current.delete(targetChatId);
+      }
+
+      // Immediately broadcast that typing has stopped
       presenceChannelRef.current.track({
         user_id: userId,
         status: myStatus,
@@ -226,14 +236,8 @@ export const usePresence = ({
         is_typing: false,
         current_chat_id: targetChatId,
       });
-
-      const timeout = typingTimeoutRef.current.get(targetChatId);
-      if (timeout) {
-        clearTimeout(timeout);
-        typingTimeoutRef.current.delete(targetChatId);
-      }
     },
-    [userId, myStatus]
+    [userId, myStatus],
   );
 
   /**
@@ -244,7 +248,7 @@ export const usePresence = ({
       const userPresence = presence.get(targetUserId);
       return userPresence?.status === "online";
     },
-    [presence]
+    [presence],
   );
 
   /**
@@ -259,7 +263,7 @@ export const usePresence = ({
       }
       return true;
     },
-    [presence]
+    [presence],
   );
 
   /**
@@ -269,7 +273,7 @@ export const usePresence = ({
     (targetUserId: string): UserPresence | undefined => {
       return presence.get(targetUserId);
     },
-    [presence]
+    [presence],
   );
 
   /**
@@ -312,7 +316,13 @@ export const usePresence = ({
       }
     };
 
-    const events = ["mousedown", "mousemove", "keypress", "scroll", "touchstart"];
+    const events = [
+      "mousedown",
+      "mousemove",
+      "keypress",
+      "scroll",
+      "touchstart",
+    ];
     events.forEach((event) => {
       document.addEventListener(event, handleActivity);
     });

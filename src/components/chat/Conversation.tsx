@@ -5,16 +5,20 @@ import {
   GlassButton,
   TypingIndicator,
 } from "@/components/ui/glassmorphism";
-import { ArrowLeft, Lock } from "lucide-react";
+import { ArrowLeft, Lock, Phone, Video, MoreVertical } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
-import { v4 as uuidv4 } from "uuid";
 import MessageComponent from "./Message";
 import MessageInput from "./MessageInput";
-import { useChatData, Message } from "@/hooks/useChatData";
+import { useChatData } from "@/hooks/useChatData";
 import { usePresence } from "@/hooks/usePresence";
 import { supabase } from "@/integrations/supabase/client";
 import ChatPasswordPrompt from "@/components/auth/ChatPasswordPrompt";
+import { uploadFile } from "@/lib/fileUpload/FileUploadService";
+import { ChatSkeleton } from "@/components/ui/skeleton-loader";
+import { callService, CallState, CallType } from "@/lib/webrtc/callService";
+import { IncomingCallOverlay } from "@/components/webrtc/IncomingCallOverlay";
+import { ActiveCallOverlay } from "@/components/webrtc/ActiveCallOverlay";
 
 interface Contact {
   id: string;
@@ -47,14 +51,27 @@ const Conversation = () => {
   // Use presence tracking
   const { isOtherUserTyping, updatePresence } = usePresence({
     chatId: chatId || "",
+    userId: user?.id || "",
   });
 
   const [contact, setContact] = useState<Contact | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-  const [reactingToMessageId, setReactingToMessageId] = useState<string | null>(
-    null,
-  );
+  const [reactingToMessageId, setReactingToMessageId] = useState<string | null>(null);
   const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
+
+  // Call State
+  const [callState, setCallState] = useState<CallState>("idle");
+  const [incomingCall, setIncomingCall] = useState<{ id: string; type: CallType; caller: { id: string; username: string } } | null>(null);
+  const [activeCallDetails, setActiveCallDetails] = useState<{
+    localStream: MediaStream | null;
+    remoteStream: MediaStream | null;
+    type: CallType;
+    duration: number;
+  } | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [callDurationInterval, setCallDurationInterval] = useState<NodeJS.Timeout | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -129,45 +146,144 @@ const Conversation = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // --- Call Logic Start ---
+
+  useEffect(() => {
+    // Listen for call events
+    const handleIncomingCall = (data: any) => {
+      console.log("Incoming call:", data);
+      setIncomingCall(data);
+      setCallState("incoming");
+    };
+
+    const handleCallStateChange = (state: CallState) => {
+      console.log("Call state changed:", state);
+      setCallState(state);
+      if (state === "connected") {
+        setIncomingCall(null);
+        // Start duration timer
+        const interval = setInterval(() => {
+          setActiveCallDetails(prev => prev ? ({ ...prev, duration: prev.duration + 1 }) : null);
+        }, 1000);
+        setCallDurationInterval(interval);
+      } else if (state === "ended" || state === "idle") {
+        if (callDurationInterval) clearInterval(callDurationInterval);
+        setActiveCallDetails(null);
+        setIncomingCall(null);
+      }
+    };
+
+    const handleStream = (stream: MediaStream) => {
+      setActiveCallDetails(prev => prev ? ({ ...prev, remoteStream: stream }) : null);
+    };
+
+    callService.on("incoming-call", handleIncomingCall);
+    callService.on("state-change", handleCallStateChange);
+    callService.on("stream", handleStream);
+
+    return () => {
+      callService.off("incoming-call", handleIncomingCall);
+      callService.off("state-change", handleCallStateChange);
+      callService.off("stream", handleStream);
+      if (callDurationInterval) clearInterval(callDurationInterval);
+    }
+  }, [callDurationInterval]);
+
+  const initiateCall = async (type: CallType) => {
+    if (!chatId || !contact) return;
+
+    try {
+      setCallState("calling");
+      setActiveCallDetails({
+        localStream: null,
+        remoteStream: null,
+        type,
+        duration: 0
+      });
+
+      await callService.initiateCall(chatId, contact.id, type);
+
+      // Update local stream in state once initialized
+      const stream = callService.getLocalStream();
+      setActiveCallDetails(prev => prev ? ({ ...prev, localStream: stream }) : null);
+
+    } catch (error) {
+      console.error("Failed to start call:", error);
+      toast({ title: "Call Failed", description: "Could not start call", variant: "destructive" });
+      setCallState("idle");
+    }
+  };
+
+  const answerCall = async () => {
+    if (!incomingCall) return;
+    try {
+      await callService.answerCall(incomingCall.id);
+      setActiveCallDetails({
+        localStream: callService.getLocalStream(),
+        remoteStream: null,
+        type: incomingCall.type,
+        duration: 0
+      });
+    } catch (error) {
+      console.error("Error answering call", error);
+    }
+  };
+
+  const rejectCall = () => {
+    if (!incomingCall) return;
+    callService.rejectCall(incomingCall.id);
+    setIncomingCall(null);
+    setCallState("idle");
+  };
+
+  const endCall = () => {
+    callService.endCall();
+    setCallState("idle");
+  };
+
+  const toggleMute = () => {
+    const muted = callService.toggleMute();
+    setIsMuted(muted);
+  };
+
+  const toggleVideo = () => {
+    const video = callService.toggleVideo();
+    setIsVideoEnabled(video);
+  };
+
+  const toggleScreenShare = async () => {
+    // Mock implementation for now as callService might need updates for this
+    setIsScreenSharing(!isScreenSharing);
+    toast({ title: "Screen Share", description: "Feature coming soon!" });
+  };
+
+  // --- Call Logic End ---
+
   const handleSendMessage = async (message: string, file: File | null) => {
     if (!user || !chatId) return;
 
     try {
       let mediaUrl = undefined;
 
-      // If there's a file, upload it to storage
+      // If there's a file, upload it using FileUploadService
       if (file) {
-        const fileExt = file.name.split(".").pop();
-        const fileName = `${uuidv4()}.${fileExt}`;
-        const filePath = `${user.id}/${fileName}`;
+        const result = await uploadFile(file, user.id, chatId);
 
-        // Upload image to storage
-        const { error: uploadError } = await supabase.storage
-          .from("chat-media")
-          .upload(filePath, file);
-
-        if (uploadError) {
+        if (!result.success) {
           toast({
             title: "Upload failed",
-            description: uploadError.message,
+            description: result.error || "Failed to upload file",
             variant: "destructive",
           });
           return;
         }
 
-        // Get public URL
-        const { data: urlData } = await supabase.storage
-          .from("chat-media")
-          .getPublicUrl(filePath);
-
-        if (urlData) {
-          mediaUrl = urlData.publicUrl;
-        }
+        mediaUrl = result.url;
       }
 
       // Send message using the hook
       await hookSendMessage(message, { mediaUrl });
-      
+
     } catch (error) {
       console.error("Error sending message:", error);
       toast({
@@ -194,29 +310,20 @@ const Conversation = () => {
   };
 
   const handleMessageDisappear = async (messageId: string) => {
-     // useChatData doesn't expose deleteMessage directly for disappearance logic yet, 
-     // but we can implement it or add it to hook. 
-     // For now, let's keep the manual delete but it would be better in the hook.
-     // Actually useChatData DOES expose deleteMessage.
-     // But looking at the code I'm replacing, it used manual delete.
-     // Let's use the one from hook if available, otherwise direct call.
-     // useChatData has deleteMessage.
-     try {
-        const { error } = await supabase
-          .from("messages")
-          .delete()
-          .eq("id", messageId);
-          
-        if (error) throw error;
-     } catch (error) {
-        console.error("Error deleting disappeared message:", error);
-     }
+    try {
+      const { error } = await supabase
+        .from("messages")
+        .delete()
+        .eq("id", messageId);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error("Error deleting disappeared message:", error);
+    }
   };
 
   const handleViewOneTimeMedia = async (messageId: string) => {
     if (!user) return;
-
-    // Mark the media as viewed in database
     await supabase
       .from("messages")
       .update({
@@ -225,7 +332,6 @@ const Conversation = () => {
       })
       .eq("id", messageId);
 
-    // The realtime subscription in useChatData should handle the UI update
     toast({
       title: "Media expired",
       description: "The one-time view media has expired",
@@ -233,8 +339,6 @@ const Conversation = () => {
   };
 
   const handlePasswordEntered = async (password: string) => {
-    // The prompt component calls setChatPassword internally, 
-    // so we just need to trigger the unlock in the hook
     const success = await unlockChat();
     if (success) {
       setShowPasswordPrompt(false);
@@ -243,18 +347,10 @@ const Conversation = () => {
 
   if (loading && !messages.length && !isPasswordRequired) {
     return (
-      <GlassContainer className="w-full max-w-md h-full flex items-center justify-center">
-        <p className="text-white">Loading conversation...</p>
+      <GlassContainer className="w-full h-full flex items-center justify-center p-0 overflow-hidden bg-black/20 backdrop-blur-xl border-white/10">
+        <ChatSkeleton />
       </GlassContainer>
     );
-  }
-
-  // If password is required and we are not unlocked
-  if (isPasswordRequired) {
-     // We will render the prompt.
-     // But we also want to show the container behind it maybe?
-     // Or just return the prompt if it's blocking.
-     // The ChatPasswordPrompt is a Dialog, so it needs to be rendered.
   }
 
   if (!contact && !loading && !isPasswordRequired) {
@@ -271,76 +367,114 @@ const Conversation = () => {
   }
 
   return (
-    <GlassContainer className="w-full max-w-md h-full max-h-[90vh] flex flex-col relative">
-      <ChatPasswordPrompt 
-        open={showPasswordPrompt} 
+    <GlassContainer className="w-full h-full flex flex-col relative rounded-none md:rounded-2xl border-0 md:border border-white/10 shadow-none md:shadow-2xl overflow-hidden bg-black/40 backdrop-blur-xl">
+      <ChatPasswordPrompt
+        open={showPasswordPrompt}
         onOpenChange={setShowPasswordPrompt}
         chatId={chatId || ""}
         onPasswordEntered={handlePasswordEntered}
       />
 
+      {/* Incoming Call Overlay */}
+      {incomingCall && (
+        <IncomingCallOverlay
+          callerName={incomingCall.caller.username}
+          callerAvatar=""
+          callType={incomingCall.type}
+          onAccept={answerCall}
+          onReject={rejectCall}
+        />
+      )}
+
+      {/* Active Call Overlay */}
+      {(callState === "connected" || callState === "calling") && activeCallDetails && (
+        <ActiveCallOverlay
+          localStream={activeCallDetails.localStream}
+          remoteStream={activeCallDetails.remoteStream}
+          remoteUserName={contact?.username || "Unknown"}
+          callType={activeCallDetails.type}
+          callDuration={activeCallDetails.duration}
+          isMuted={isMuted}
+          isVideoEnabled={isVideoEnabled}
+          isScreenSharing={isScreenSharing}
+          onToggleMute={toggleMute}
+          onToggleVideo={toggleVideo}
+          onToggleScreenShare={toggleScreenShare}
+          onEndCall={endCall}
+        />
+      )}
+
       {/* Header */}
-      <div className="flex items-center p-4 border-b border-white/10">
+      <div className="flex items-center p-4 border-b border-white/10 bg-white/5 backdrop-blur-md">
         <GlassButton
           size="sm"
           variant="ghost"
-          className="mr-2"
+          className="mr-2 hover:bg-white/10"
           onClick={() => navigate("/chats")}
         >
           <ArrowLeft size={20} />
         </GlassButton>
 
-        <div className="flex-1">
-          <div className="flex items-center">
-             {contact ? (
-               <>
-                <div className="w-10 h-10 rounded-full bg-ice-dark/50 border border-ice-accent/30 flex items-center justify-center text-lg font-medium">
+        <div className="flex-1 flex items-center">
+          {contact ? (
+            <>
+              <div className="relative">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-ice-accent/80 to-ice-dark/80 border border-white/20 flex items-center justify-center text-lg font-medium shadow-lg">
                   {contact.username.charAt(0)}
                 </div>
+                {contact.status ? (
+                  <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-black rounded-full"></div>
+                ) : null}
+              </div>
 
-                <div className="ml-3">
-                  <h2 className="text-white font-medium">{contact.username}</h2>
-                  {isOtherUserTyping ? (
-                    <p className="text-ice-accent text-xs">typing...</p>
-                  ) : contact.status ? (
-                    <p className="text-ice-accent text-xs truncate">
-                      {contact.status}
-                    </p>
-                  ) : (
-                    <p className="text-white/60 text-xs">Online</p>
-                  )}
-                </div>
-               </>
-             ) : (
-               <div className="ml-3">
-                  <h2 className="text-white font-medium">Loading...</h2>
-               </div>
-             )}
-          </div>
+              <div className="ml-3">
+                <h2 className="text-white font-bold tracking-tight">{contact.username}</h2>
+                {isOtherUserTyping ? (
+                  <p className="text-ice-accent text-xs animate-pulse font-medium">typing...</p>
+                ) : (
+                  <p className="text-white/50 text-xs">{contact.status || "Online"}</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="ml-3">
+              <div className="h-4 w-24 bg-white/10 rounded animate-pulse" />
+            </div>
+          )}
         </div>
-        
-        {/* Encryption Status Icon */}
-        <div className="text-ice-accent/50">
-           <Lock size={16} />
+
+        {/* Call Buttons */}
+        <div className="flex items-center space-x-1">
+          <GlassButton size="icon" variant="ghost" className="rounded-full hover:bg-white/10 text-white/80 hover:text-white" onClick={() => initiateCall('audio')}>
+            <Phone size={20} />
+          </GlassButton>
+          <GlassButton size="icon" variant="ghost" className="rounded-full hover:bg-white/10 text-white/80 hover:text-white" onClick={() => initiateCall('video')}>
+            <Video size={20} />
+          </GlassButton>
+          <GlassButton size="icon" variant="ghost" className="rounded-full hover:bg-white/10 text-white/80 hover:text-white">
+            <MoreVertical size={20} />
+          </GlassButton>
         </div>
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
         {isPasswordRequired ? (
-          <div className="h-full flex flex-col items-center justify-center text-white/50">
-            <Lock className="w-12 h-12 mb-4 opacity-50" />
-            <p>This chat is encrypted.</p>
-            <p className="text-sm">Please enter password to unlock.</p>
-            <GlassButton 
-              className="mt-4"
+          <div className="h-full flex flex-col items-center justify-center text-white/50 animate-in fade-in duration-500">
+            <div className="p-6 rounded-full bg-white/5 mb-4">
+              <Lock className="w-12 h-12 opacity-50" />
+            </div>
+            <p className="text-lg font-medium">Encrypted Conversation</p>
+            <p className="text-sm mt-1 mb-6">Enter password to unlock messages</p>
+            <GlassButton
+              className="bg-ice-accent/20 hover:bg-ice-accent/30 border-ice-accent/30 min-w-[120px]"
               onClick={() => setShowPasswordPrompt(true)}
             >
-              Enter Password
+              Unlock
             </GlassButton>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-6">
             {messages.map((msg) => (
               <React.Fragment key={msg.id}>
                 <MessageComponent
@@ -352,11 +486,11 @@ const Conversation = () => {
                 />
 
                 {reactingToMessageId === msg.id && showEmojiPicker && (
-                  <div className="glass p-2 rounded-lg flex space-x-2 justify-end mb-2">
+                  <div className="glass p-2 rounded-lg flex space-x-2 justify-end mb-2 animate-in zoom-in duration-200 origin-bottom-right">
                     {EMOJIS.map((emoji) => (
                       <button
                         key={emoji}
-                        className="text-lg hover:bg-white/10 p-1 rounded"
+                        className="text-xl hover:bg-white/20 p-2 rounded transition-colors"
                         onClick={() => handleSelectEmoji(msg.id, emoji)}
                       >
                         {emoji}
@@ -368,7 +502,7 @@ const Conversation = () => {
             ))}
 
             {isOtherUserTyping && (
-              <div className="message-received w-auto">
+              <div className="message-received w-auto animate-in slide-in-from-left duration-300">
                 <TypingIndicator />
               </div>
             )}
@@ -379,11 +513,12 @@ const Conversation = () => {
       </div>
 
       {/* Message Input */}
-      <MessageInput
-        onSendMessage={handleSendMessage}
-        onTypingUpdate={updateTypingStatus}
-        disabled={isPasswordRequired}
-      />
+      <div className="relative z-10 bg-black/20 backdrop-blur-md">
+        <MessageInput
+          onSendMessage={handleSendMessage}
+          onTypingUpdate={updateTypingStatus}
+        />
+      </div>
     </GlassContainer>
   );
 };
